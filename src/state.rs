@@ -104,6 +104,7 @@ pub struct Settings {
     pub notifications: NotifyMode,
     pub flash: FlashMode,
     pub elapsed_time: bool,
+    pub mode_indicator: bool,
 }
 
 impl Default for Settings {
@@ -112,6 +113,7 @@ impl Default for Settings {
             notifications: NotifyMode::Always,
             flash: FlashMode::Once,
             elapsed_time: true,
+            mode_indicator: true,
         }
     }
 }
@@ -128,6 +130,7 @@ pub enum SettingKey {
     Notifications,
     Flash,
     ElapsedTime,
+    ModeIndicator,
 }
 
 pub enum MenuAction {

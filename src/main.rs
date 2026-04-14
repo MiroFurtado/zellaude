@@ -112,6 +112,10 @@ impl ZellijPlugin for State {
                                                 self.settings.elapsed_time =
                                                     !self.settings.elapsed_time;
                                             }
+                                            state::SettingKey::ModeIndicator => {
+                                                self.settings.mode_indicator =
+                                                    !self.settings.mode_indicator;
+                                            }
                                         }
                                         self.save_config();
                                     }

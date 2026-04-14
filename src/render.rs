@@ -144,13 +144,14 @@ pub fn render_status_bar(state: &mut State, _rows: usize, cols: usize) {
 
     // Build prefix: " Zellaude (session) MODE "
     let (mode_bg, mode_text) = mode_style(state.input_mode);
+    let show_mode = state.settings.mode_indicator;
     let session_part = match state.zellij_session_name.as_deref() {
         Some(name) => format!(" ({name})"),
         None => String::new(),
     };
     let prefix_text = format!(" Zellaude{session_part} ");
     let prefix_width = display_width(&prefix_text);
-    let mode_pill_width = 1 + mode_text.len() + 1; // space + text + space
+    let mode_pill_width = if show_mode { 1 + mode_text.len() + 1 } else { 0 };
     let total_prefix_width = prefix_width + mode_pill_width;
 
     // Render prefix segment (truncate if wider than cols)
@@ -162,12 +163,14 @@ pub fn render_status_bar(state: &mut State, _rows: usize, cols: usize) {
             bg(prefix_bg.0, prefix_bg.1, prefix_bg.2),
             fg(255, 255, 255),
         );
-        let _ = write!(
-            buf,
-            "{}{}{BOLD} {mode_text} {RESET}",
-            bg(mode_bg.0, mode_bg.1, mode_bg.2),
-            fg(30, 30, 46),
-        );
+        if show_mode {
+            let _ = write!(
+                buf,
+                "{}{}{BOLD} {mode_text} {RESET}",
+                bg(mode_bg.0, mode_bg.1, mode_bg.2),
+                fg(30, 30, 46),
+            );
+        }
         col = total_prefix_width;
     } else if prefix_width <= cols {
         // Fit the name part but skip mode pill
@@ -192,7 +195,7 @@ pub fn render_status_bar(state: &mut State, _rows: usize, cols: usize) {
     }
     state.prefix_click_region = Some((0, col));
 
-    let last_prefix_bg = if total_prefix_width <= cols { mode_bg } else { prefix_bg };
+    let last_prefix_bg = if show_mode && total_prefix_width <= cols { mode_bg } else { prefix_bg };
     let prefix_used = col;
 
     if col < cols {
@@ -534,6 +537,23 @@ fn render_settings_menu(state: &mut State, buf: &mut String, col: &mut usize) {
         render_tristate(
             buf, col, &mut state.menu_click_regions,
             SettingKey::ElapsedTime, symbol, label, &sym_color, &label_color,
+        );
+    }
+
+    // --- Mode indicator (bool) ---
+    {
+        let _ = write!(buf, "  ");
+        *col += 2;
+        let enabled = state.settings.mode_indicator;
+        let (symbol, sym_color, label_color) = if enabled {
+            ("●", fg(80, 200, 120), fg(255, 255, 255))
+        } else {
+            ("○", fg(100, 100, 100), fg(100, 100, 100))
+        };
+        let label = if enabled { "Mode indicator: on" } else { "Mode indicator: off" };
+        render_tristate(
+            buf, col, &mut state.menu_click_regions,
+            SettingKey::ModeIndicator, symbol, label, &sym_color, &label_color,
         );
     }
 
