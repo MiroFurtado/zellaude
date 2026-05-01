@@ -472,10 +472,17 @@ impl State {
         }
         let json = serde_json::to_string(&self.sessions).unwrap_or_default();
         let json_esc = json.replace('\'', "'\\''");
+        // .bak is a high-water-mark snapshot: only updated when the new content
+        // has more sessions than the current .bak. Protects against losing rich
+        // state when remove_dead_panes prunes after a session reattach.
         let cmd = format!(
             "DIR=\"$HOME/.config/zellij/plugins/zellaude-state\" && mkdir -p \"$DIR\" && \
              TMP=$(mktemp \"$DIR/.tmp.XXXXXX\") && printf '%s' '{json_esc}' > \"$TMP\" && \
-             mv \"$TMP\" \"$DIR/{safe}.json\""
+             MAIN=\"$DIR/{safe}.json\" && BAK=\"$MAIN.bak\" && \
+             NEW_COUNT=$(jq 'length' \"$TMP\" 2>/dev/null || echo 0) && \
+             BAK_COUNT=$(jq 'length' \"$BAK\" 2>/dev/null || echo 0) && \
+             if [ \"$NEW_COUNT\" -gt \"$BAK_COUNT\" ]; then cp \"$TMP\" \"$BAK\"; fi && \
+             mv \"$TMP\" \"$MAIN\""
         );
         let mut ctx = BTreeMap::new();
         ctx.insert("type".into(), "save_state".into());
@@ -498,10 +505,16 @@ impl State {
         }
         let kdl = self.build_layout_kdl();
         let kdl_esc = kdl.replace('\'', "'\\''");
+        // High-water-mark .bak: counts `pane command=` lines as a proxy for
+        // "tabs with real resume info". Only refreshed when we'd be richer.
         let cmd = format!(
             "DIR=\"$HOME/.config/zellij/plugins/zellaude-state\" && mkdir -p \"$DIR\" && \
              TMP=$(mktemp \"$DIR/.tmp.XXXXXX\") && printf '%s' '{kdl_esc}' > \"$TMP\" && \
-             mv \"$TMP\" \"$DIR/{safe}.kdl\""
+             MAIN=\"$DIR/{safe}.kdl\" && BAK=\"$MAIN.bak\" && \
+             NEW_COUNT=$(grep -c 'pane command=' \"$TMP\" 2>/dev/null || echo 0) && \
+             BAK_COUNT=$(grep -c 'pane command=' \"$BAK\" 2>/dev/null || echo 0) && \
+             if [ \"$NEW_COUNT\" -gt \"$BAK_COUNT\" ]; then cp \"$TMP\" \"$BAK\"; fi && \
+             mv \"$TMP\" \"$MAIN\""
         );
         let mut ctx = BTreeMap::new();
         ctx.insert("type".into(), "save_layout".into());
