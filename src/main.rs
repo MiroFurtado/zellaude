@@ -63,6 +63,7 @@ impl ZellijPlugin for State {
                 self.input_mode = mode_info.mode;
                 if let Some(name) = mode_info.session_name {
                     self.zellij_session_name = Some(name);
+                    self.maybe_load_state();
                 }
                 true
             }
@@ -140,6 +141,18 @@ impl ZellijPlugin for State {
                         self.config_loaded = true;
                         true
                     }
+                    Some("load_state") => {
+                        if exit_code == Some(0) {
+                            let raw = String::from_utf8_lossy(&stdout);
+                            if let Ok(persisted) =
+                                serde_json::from_str::<BTreeMap<u32, SessionInfo>>(raw.trim())
+                            {
+                                self.merge_sessions(persisted);
+                            }
+                        }
+                        self.state_loaded = true;
+                        true
+                    }
                     Some("install_hooks") => {
                         self.hooks_installed = true;
                         false
@@ -155,6 +168,13 @@ impl ZellijPlugin for State {
                     set_timeout(FLASH_TICK);
                 } else {
                     set_timeout(TIMER_INTERVAL);
+                }
+                if stale_changed {
+                    self.state_dirty = true;
+                }
+                if self.state_dirty && self.state_loaded {
+                    self.save_state();
+                    self.state_dirty = false;
                 }
                 has_flashes || stale_changed || flash_changed || self.has_elapsed_display()
             }
@@ -258,8 +278,12 @@ impl State {
     }
 
     fn remove_dead_panes(&mut self) {
+        let before = self.sessions.len();
         self.sessions
             .retain(|pane_id, _| self.pane_to_tab.contains_key(pane_id));
+        if self.sessions.len() != before {
+            self.state_dirty = true;
+        }
     }
 
     fn cleanup_stale_sessions(&mut self) -> bool {
@@ -374,7 +398,63 @@ impl State {
                     session.tab_name = Some(name.clone());
                 }
                 self.sessions.insert(pane_id, session);
+                self.state_dirty = true;
             }
         }
     }
+
+    fn maybe_load_state(&mut self) {
+        if self.state_load_started {
+            return;
+        }
+        let Some(safe) = self
+            .zellij_session_name
+            .as_deref()
+            .map(sanitize_session_name)
+        else {
+            return;
+        };
+        if safe.is_empty() {
+            return;
+        }
+        self.state_load_started = true;
+        let mut ctx = BTreeMap::new();
+        ctx.insert("type".into(), "load_state".into());
+        let cmd = format!(
+            "cat \"$HOME/.config/zellij/plugins/zellaude-state/{safe}.json\" 2>/dev/null || echo '{{}}'"
+        );
+        run_command(&["sh", "-c", &cmd], ctx);
+    }
+
+    fn save_state(&self) {
+        let Some(safe) = self
+            .zellij_session_name
+            .as_deref()
+            .map(sanitize_session_name)
+        else {
+            return;
+        };
+        if safe.is_empty() {
+            return;
+        }
+        let json = serde_json::to_string(&self.sessions).unwrap_or_default();
+        let json_esc = json.replace('\'', "'\\''");
+        let cmd = format!(
+            "DIR=\"$HOME/.config/zellij/plugins/zellaude-state\" && mkdir -p \"$DIR\" && \
+             TMP=$(mktemp \"$DIR/.tmp.XXXXXX\") && printf '%s' '{json_esc}' > \"$TMP\" && \
+             mv \"$TMP\" \"$DIR/{safe}.json\""
+        );
+        let mut ctx = BTreeMap::new();
+        ctx.insert("type".into(), "save_state".into());
+        run_command(&["sh", "-c", &cmd], ctx);
+    }
+}
+
+/// Strip characters that aren't safe in a filename. Zellij session names are
+/// already restricted to a small charset, but this is a defense-in-depth guard
+/// against shell-quoting surprises.
+fn sanitize_session_name(name: &str) -> String {
+    name.chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
+        .collect()
 }

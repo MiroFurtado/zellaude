@@ -166,4 +166,12 @@ pub struct State {
     pub menu_click_regions: Vec<MenuClickRegion>,
     pub config_loaded: bool,
     pub hooks_installed: bool,
+    /// True once we've fired the disk-load request (prevents duplicate loads).
+    pub state_load_started: bool,
+    /// True once the disk-load result has been processed. Save is gated on this
+    /// so we don't overwrite the persisted file with an empty map before we've
+    /// had a chance to load from it.
+    pub state_loaded: bool,
+    /// True when sessions have changed since the last save_state.
+    pub state_dirty: bool,
 }
