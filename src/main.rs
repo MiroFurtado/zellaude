@@ -34,6 +34,9 @@ impl ZellijPlugin for State {
         ]);
         set_timeout(TIMER_INTERVAL);
 
+        // Cache our own plugin pane id for later self-addressing (e.g. resize)
+        self.plugin_pane_id = Some(get_plugin_ids().plugin_id);
+
         // Load persisted settings (may be retried in PermissionRequestResult
         // if this fires before permissions are granted)
         self.load_config();
@@ -67,24 +70,31 @@ impl ZellijPlugin for State {
                 }
                 true
             }
-            Event::Mouse(Mouse::LeftClick(_, col)) => {
+            Event::Mouse(Mouse::LeftClick(line, col)) => {
+                // Mouse line is 0-based; render rows are 1-based.
+                let row = (line as usize).saturating_add(1);
                 let col = col as usize;
 
-                // Check prefix click region first → toggle ViewMode
-                if let Some((start, end)) = self.prefix_click_region {
-                    if col >= start && col < end {
-                        self.view_mode = match self.view_mode {
-                            ViewMode::Normal => ViewMode::Settings,
-                            ViewMode::Settings => ViewMode::Normal,
-                        };
-                        return true;
+                // Prefix and settings menu live on row 1 only.
+                if row == 1 {
+                    if let Some((start, end)) = self.prefix_click_region {
+                        if col >= start && col < end {
+                            self.view_mode = match self.view_mode {
+                                ViewMode::Normal => ViewMode::Settings,
+                                ViewMode::Settings => ViewMode::Normal,
+                            };
+                            return true;
+                        }
                     }
                 }
 
                 match self.view_mode {
                     ViewMode::Normal => {
                         for region in &self.click_regions {
-                            if col >= region.start_col && col < region.end_col {
+                            if region.row == row
+                                && col >= region.start_col
+                                && col < region.end_col
+                            {
                                 if region.is_waiting {
                                     focus_terminal_pane(region.pane_id, false);
                                 } else {
@@ -96,6 +106,9 @@ impl ZellijPlugin for State {
                         false
                     }
                     ViewMode::Settings => {
+                        if row != 1 {
+                            return false;
+                        }
                         for region in &self.menu_click_regions {
                             if col >= region.start_col && col < region.end_col {
                                 match &region.action {
@@ -174,6 +187,7 @@ impl ZellijPlugin for State {
                 }
                 if self.state_dirty && self.state_loaded {
                     self.save_state();
+                    self.save_layout();
                     self.state_dirty = false;
                 }
                 has_flashes || stale_changed || flash_changed || self.has_elapsed_display()
@@ -247,6 +261,25 @@ impl ZellijPlugin for State {
                         self.merge_sessions(sessions);
                         return true;
                     }
+                }
+                false
+            }
+            "zellaude:resize" => {
+                // Self-resize the plugin pane. Lets users grow the bar in
+                // existing zellij sessions without re-creating them, since
+                // set_selectable(false) blocks the usual focus+resize approach.
+                // Payload "decrease" shrinks; anything else (or empty) grows.
+                if let Some(pid) = self.plugin_pane_id {
+                    let resize = match pipe_message.payload.as_deref().map(str::trim) {
+                        Some("decrease") => Resize::Decrease,
+                        _ => Resize::Increase,
+                    };
+                    let strategy = ResizeStrategy {
+                        resize,
+                        direction: Some(Direction::Down),
+                        invert_on_boundaries: true,
+                    };
+                    resize_pane_with_id(strategy, PaneId::Plugin(pid));
                 }
                 false
             }
@@ -448,6 +481,104 @@ impl State {
         ctx.insert("type".into(), "save_state".into());
         run_command(&["sh", "-c", &cmd], ctx);
     }
+
+    /// Write a zellij layout snapshot for the current set of tabs, so the
+    /// session can be recreated with the same tabs/cwds and each agent pane
+    /// resumed to its prior session_id.
+    fn save_layout(&self) {
+        let Some(safe) = self
+            .zellij_session_name
+            .as_deref()
+            .map(sanitize_session_name)
+        else {
+            return;
+        };
+        if safe.is_empty() || self.tabs.is_empty() {
+            return;
+        }
+        let kdl = self.build_layout_kdl();
+        let kdl_esc = kdl.replace('\'', "'\\''");
+        let cmd = format!(
+            "DIR=\"$HOME/.config/zellij/plugins/zellaude-state\" && mkdir -p \"$DIR\" && \
+             TMP=$(mktemp \"$DIR/.tmp.XXXXXX\") && printf '%s' '{kdl_esc}' > \"$TMP\" && \
+             mv \"$TMP\" \"$DIR/{safe}.kdl\""
+        );
+        let mut ctx = BTreeMap::new();
+        ctx.insert("type".into(), "save_layout".into());
+        run_command(&["sh", "-c", &cmd], ctx);
+    }
+
+    fn build_layout_kdl(&self) -> String {
+        use std::fmt::Write;
+
+        let mut tabs_sorted: Vec<&TabInfo> = self.tabs.iter().collect();
+        tabs_sorted.sort_by_key(|t| t.position);
+
+        let mut out = String::from("// Auto-generated by zellaude — recreate session via:\n");
+        let _ = writeln!(
+            out,
+            "//   zellij --layout <this-file> --session {}",
+            self.zellij_session_name.as_deref().unwrap_or("")
+        );
+        out.push_str("layout {\n");
+        out.push_str("    default_tab_template {\n");
+        out.push_str(
+            "        pane size=2 borderless=true {\n            \
+             plugin location=\"file:~/.config/zellij/plugins/zellaude.wasm\"\n        }\n",
+        );
+        out.push_str("        children\n    }\n\n");
+
+        for tab in tabs_sorted {
+            // Pick the highest-priority session for this tab — same heuristic
+            // we use in the renderer to choose what to display.
+            let session = self
+                .sessions
+                .values()
+                .filter(|s| s.tab_index == Some(tab.position))
+                .max_by_key(|s| s.last_event_ts);
+
+            let _ = writeln!(out, "    tab name=\"{}\" {{", kdl_escape(&tab.name));
+
+            match session {
+                Some(s) if !s.session_id.is_empty() => {
+                    let bin = match s.agent.as_deref() {
+                        Some("cursor") => "cursor-agent",
+                        _ => "claude",
+                    };
+                    let _ = write!(out, "        pane command=\"{bin}\"");
+                    if let Some(cwd) = s.cwd.as_deref().filter(|c| !c.is_empty()) {
+                        let _ = write!(out, " cwd=\"{}\"", kdl_escape(cwd));
+                    }
+                    out.push_str(" {\n");
+                    let _ = writeln!(
+                        out,
+                        "            args \"--resume\" \"{}\"",
+                        kdl_escape(&s.session_id)
+                    );
+                    out.push_str("        }\n");
+                }
+                Some(s) if s.cwd.as_deref().map(|c| !c.is_empty()).unwrap_or(false) => {
+                    let _ = writeln!(
+                        out,
+                        "        pane cwd=\"{}\"",
+                        kdl_escape(s.cwd.as_deref().unwrap_or(""))
+                    );
+                }
+                _ => {
+                    out.push_str("        pane\n");
+                }
+            }
+
+            out.push_str("    }\n");
+        }
+
+        out.push_str("}\n");
+        out
+    }
+}
+
+fn kdl_escape(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
 /// Strip characters that aren't safe in a filename. Zellij session names are

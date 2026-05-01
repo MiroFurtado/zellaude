@@ -72,6 +72,7 @@ pub fn handle_hook_event(state: &mut State, payload: HookPayload) {
             last_event_ts: 0,
             cwd: None,
             last_ts_ms: 0,
+            agent: None,
         });
 
     if matches!(activity, Activity::Waiting) {
@@ -103,6 +104,9 @@ pub fn handle_hook_event(state: &mut State, payload: HookPayload) {
     }
     if let Some(cwd) = payload.cwd {
         session.cwd = Some(cwd);
+    }
+    if let Some(agent) = payload.agent {
+        session.agent = Some(agent);
     }
     if let Some((idx, name)) = tab_index.zip(tab_name) {
         session.tab_index = Some(idx);

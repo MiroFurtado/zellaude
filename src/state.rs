@@ -43,6 +43,11 @@ pub struct SessionInfo {
     pub cwd: Option<String>,
     #[serde(default)]
     pub last_ts_ms: u64,
+    /// "claude" or "cursor" — used to pick the right resume command in the
+    /// generated layout. Optional because pre-existing persisted state won't
+    /// have it.
+    #[serde(default)]
+    pub agent: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -55,9 +60,11 @@ pub struct HookPayload {
     pub zellij_session: Option<String>,
     pub term_program: Option<String>,
     pub ts_ms: Option<u64>,
+    pub agent: Option<String>,
 }
 
 pub struct ClickRegion {
+    pub row: usize,
     pub start_col: usize,
     pub end_col: usize,
     pub tab_index: usize,
@@ -166,6 +173,9 @@ pub struct State {
     pub menu_click_regions: Vec<MenuClickRegion>,
     pub config_loaded: bool,
     pub hooks_installed: bool,
+    /// This plugin instance's own pane id — cached so we can address ourselves
+    /// for self-resize without needing focus.
+    pub plugin_pane_id: Option<u32>,
     /// True once we've fired the disk-load request (prevents duplicate loads).
     pub state_load_started: bool,
     /// True once the disk-load result has been processed. Save is gated on this

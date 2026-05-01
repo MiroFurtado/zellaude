@@ -22,6 +22,10 @@ SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // .conversation_id // empty')
 TOOL_NAME=$(echo "$INPUT" | jq -r '.tool_name // empty')
 CWD=$(echo "$INPUT" | jq -r '.cwd // empty')
 
+# Identify which agent fired this hook so the plugin can later snapshot the
+# right resume command. cursor-agent's payload always includes cursor_version.
+AGENT=$(echo "$INPUT" | jq -r 'if has("cursor_version") then "cursor" else "claude" end')
+
 [ -z "$HOOK_EVENT" ] && exit 0
 
 # Normalize cursor-agent events (camelCase) to the internal PascalCase names
@@ -47,6 +51,7 @@ PAYLOAD=$(jq -nc \
   --arg zellij_session "$ZELLIJ_SESSION_NAME" \
   --arg term_program "${TERM_PROGRAM:-}" \
   --arg ts_ms "$TS_MS" \
+  --arg agent "$AGENT" \
   '{
     pane_id: ($pane_id | tonumber),
     session_id: $session_id,
@@ -55,7 +60,8 @@ PAYLOAD=$(jq -nc \
     cwd: (if $cwd == "" then null else $cwd end),
     zellij_session: $zellij_session,
     term_program: (if $term_program == "" then null else $term_program end),
-    ts_ms: ($ts_ms | tonumber)
+    ts_ms: ($ts_ms | tonumber),
+    agent: $agent
   }')
 
 # Permission request: bell + desktop notification

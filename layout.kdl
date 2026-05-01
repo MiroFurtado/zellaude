@@ -1,5 +1,8 @@
 // Zellaude example layout — plugin bar appears in every tab
 // Usage: zellij --layout layout.kdl
+//
+// Set size=2 to enable double-decker mode: tabs that don't fit on the first
+// row spill over onto the second.
 
 layout {
     default_tab_template {

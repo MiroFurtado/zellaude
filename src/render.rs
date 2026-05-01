@@ -116,13 +116,14 @@ fn mode_style(mode: InputMode) -> (Color, &'static str) {
     }
 }
 
-pub fn render_status_bar(state: &mut State, _rows: usize, cols: usize) {
+pub fn render_status_bar(state: &mut State, rows: usize, cols: usize) {
     state.click_regions.clear();
     state.menu_click_regions.clear();
 
-    let mut buf = String::with_capacity(cols * 4);
-    // Terminal setup for a 1-row status bar:
-    //  \x1b[H     — cursor home (prevent scroll from cursor at end-of-line)
+    let rows = rows.max(1);
+    let mut buf = String::with_capacity(cols * rows * 4);
+    // Terminal setup:
+    //  \x1b[H     — cursor home
     //  \x1b[?7l   — disable auto-wrap (clip overflow instead of scroll)
     //  \x1b[?25l  — hide cursor
     buf.push_str("\x1b[H\x1b[?7l\x1b[?25l");
@@ -130,7 +131,13 @@ pub fn render_status_bar(state: &mut State, _rows: usize, cols: usize) {
 
     // Bail early if terminal is too narrow
     if cols < 5 {
-        let _ = write!(buf, "{bar_bg_str}{:width$}{RESET}", "", width = cols);
+        for r in 1..=rows {
+            if r > 1 {
+                let _ = write!(buf, "\x1b[{r};1H");
+            }
+            let _ = write!(buf, "{bar_bg_str}{:width$}", "", width = cols);
+        }
+        let _ = write!(buf, "{RESET}");
         print!("{buf}");
         let _ = std::io::stdout().flush();
         return;
@@ -154,7 +161,7 @@ pub fn render_status_bar(state: &mut State, _rows: usize, cols: usize) {
     let mode_pill_width = if show_mode { 1 + mode_text.len() + 1 } else { 0 };
     let total_prefix_width = prefix_width + mode_pill_width;
 
-    // Render prefix segment (truncate if wider than cols)
+    // Render prefix segment on row 1 (truncate if wider than cols)
     let mut col;
     if total_prefix_width <= cols {
         let _ = write!(
@@ -173,7 +180,6 @@ pub fn render_status_bar(state: &mut State, _rows: usize, cols: usize) {
         }
         col = total_prefix_width;
     } else if prefix_width <= cols {
-        // Fit the name part but skip mode pill
         let _ = write!(
             buf,
             "{}{}{BOLD}{prefix_text}{RESET}",
@@ -182,8 +188,7 @@ pub fn render_status_bar(state: &mut State, _rows: usize, cols: usize) {
         );
         col = prefix_width;
     } else {
-        // Even name doesn't fit — just show what we can
-        let avail = cols.saturating_sub(2); // leave room for fill
+        let avail = cols.saturating_sub(2);
         let short: String = prefix_text.chars().take(avail).collect();
         let _ = write!(
             buf,
@@ -198,23 +203,42 @@ pub fn render_status_bar(state: &mut State, _rows: usize, cols: usize) {
     let last_prefix_bg = if show_mode && total_prefix_width <= cols { mode_bg } else { prefix_bg };
     let prefix_used = col;
 
-    if col < cols {
+    let last_row: usize = if col < cols {
         match state.view_mode {
-            ViewMode::Normal => {
-                render_tabs(state, &mut buf, &mut col, cols, last_prefix_bg, prefix_used);
-            }
+            ViewMode::Normal => render_tabs(
+                state,
+                &mut buf,
+                &mut col,
+                cols,
+                rows,
+                last_prefix_bg,
+                prefix_used,
+            ),
             ViewMode::Settings => {
                 arrow(&mut buf, &mut col, last_prefix_bg, BAR_BG);
                 let _ = write!(buf, "{bar_bg_str}");
                 render_settings_menu(state, &mut buf, &mut col);
+                1
             }
         }
-    }
+    } else {
+        1
+    };
 
-    // Fill remaining width with bar background — never exceed cols
+    // Fill rest of the last rendered row
     if col < cols {
         let remaining = cols - col;
         let _ = write!(buf, "{bar_bg_str}{:width$}", "", width = remaining);
+    }
+
+    // Fill any trailing rows entirely with bar background
+    for r in (last_row + 1)..=rows {
+        let _ = write!(
+            buf,
+            "{RESET}\x1b[{r};1H{bar_bg_str}{:width$}",
+            "",
+            width = cols
+        );
     }
     let _ = write!(buf, "{RESET}");
 
@@ -222,28 +246,29 @@ pub fn render_status_bar(state: &mut State, _rows: usize, cols: usize) {
     let _ = std::io::stdout().flush();
 }
 
+/// Returns the last row (1-based) on which content was rendered.
 fn render_tabs(
     state: &mut State,
     buf: &mut String,
     col: &mut usize,
     cols: usize,
+    rows: usize,
     prefix_bg: Color,
     prefix_width: usize,
-) {
+) -> usize {
     let now_s = unix_now();
     let now_ms = unix_now_ms();
+    let bar_bg_str = bg(BAR_BG.0, BAR_BG.1, BAR_BG.2);
 
-    // Sort tabs by position
     let mut tabs: Vec<&TabInfo> = state.tabs.iter().collect();
     tabs.sort_by_key(|t| t.position);
 
     let count = tabs.len();
     if count == 0 {
         arrow(buf, col, prefix_bg, BAR_BG);
-        return;
+        return 1;
     }
 
-    // For each tab, find the best (highest-priority) Claude session
     let best_sessions: Vec<Option<&SessionInfo>> = tabs
         .iter()
         .map(|tab| {
@@ -255,7 +280,6 @@ fn render_tabs(
         })
         .collect();
 
-    // Pre-compute elapsed strings (only for Claude tabs)
     let elapsed_strs: Vec<Option<String>> = best_sessions
         .iter()
         .map(|session: &Option<&SessionInfo>| {
@@ -273,7 +297,8 @@ fn render_tabs(
         })
         .collect();
 
-    // Compute overhead: varies per tab type
+    // Width budget across all rows. The prefix only consumes from row 1.
+    let total_width = cols * rows;
     let total_elapsed_width: usize = elapsed_strs
         .iter()
         .map(|e: &Option<String>| e.as_ref().map_or(0, |s| s.len() + 1))
@@ -283,26 +308,21 @@ fn render_tabs(
         .map(|s: &Option<&SessionInfo>| if s.is_some() { 4 } else { 2 })
         .sum();
     let overhead = prefix_width + 2 * count + per_tab_overhead + total_elapsed_width;
-    let max_name_len = if overhead < cols {
-        ((cols - overhead) / count).min(20)
+    let max_name_len = if overhead < total_width {
+        ((total_width - overhead) / count).min(20)
     } else {
         0
     };
 
+    let mut row: usize = 1;
     let mut prev_bg = prefix_bg;
+    let mut is_row_start = true;
 
     for (i, tab) in tabs.iter().enumerate() {
-        // Stop if we'd overflow — need room for at least arrow + closing arrow
-        let arrows_needed = if prev_bg == prefix_bg { 1 } else { 2 };
-        if *col + arrows_needed + 3 > cols {
-            break;
-        }
-
         let session = best_sessions[i];
         let is_claude = session.is_some();
         let tab_name = &tab.name;
 
-        // Truncate name
         let char_count = tab_name.chars().count();
         let truncated = if max_name_len == 0 {
             String::new()
@@ -313,7 +333,56 @@ fn render_tabs(
             tab_name.to_string()
         };
 
-        // Check flash for any session in this tab
+        // Pre-compute the rendered width of this tab's content (no arrows).
+        let content_width: usize = if is_claude {
+            let style = activity_style(&session.unwrap().activity);
+            let mut w = 1 + display_width(style.symbol); // leading space + symbol
+            if !truncated.is_empty() {
+                w += 1 + display_width(&truncated);
+            }
+            if let Some(ref es) = elapsed_strs[i] {
+                w += 1 + es.len();
+            }
+            if tab.is_fullscreen_active {
+                w += 2;
+            }
+            w + 1 // trailing space
+        } else {
+            let mut w = 1 + display_width(&truncated); // leading space + name
+            if tab.is_fullscreen_active {
+                w += 2;
+            }
+            w + 1 // trailing space
+        };
+
+        let arrow_cost = if is_row_start { 1 } else { 2 };
+        let close_reserve = 1; // arrow → BAR_BG at end of the current row
+
+        if *col + arrow_cost + content_width + close_reserve > cols {
+            // Tab won't fit on the current row.
+            if row < rows {
+                // Close out the current row and continue on the next one.
+                arrow(buf, col, prev_bg, BAR_BG);
+                if *col < cols {
+                    let remaining = cols - *col;
+                    let _ = write!(buf, "{bar_bg_str}{:width$}", "", width = remaining);
+                }
+                let next_row = row + 1;
+                let _ = write!(buf, "{RESET}\x1b[{next_row};1H");
+                *col = 0;
+                row = next_row;
+                is_row_start = true;
+                prev_bg = BAR_BG;
+
+                // If it still doesn't fit on the next row, give up.
+                if *col + 1 + content_width + close_reserve > cols {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+
         let is_flash_bright = state
             .sessions
             .values()
@@ -327,8 +396,6 @@ fn render_tabs(
             });
 
         let is_active = tab.active;
-
-        // Pick tab background color
         let tab_bg = if is_flash_bright {
             FLASH_BG_BRIGHT
         } else if is_active {
@@ -337,13 +404,13 @@ fn render_tabs(
             TAB_BG_INACTIVE
         };
 
-        // Arrow: close previous segment, then open this tab
-        if prev_bg == prefix_bg {
+        if is_row_start {
             arrow(buf, col, prev_bg, tab_bg);
         } else {
             arrow(buf, col, prev_bg, BAR_BG);
             arrow(buf, col, BAR_BG, tab_bg);
         }
+        is_row_start = false;
 
         let tab_bg_str = bg(tab_bg.0, tab_bg.1, tab_bg.2);
         let region_start = *col;
@@ -360,40 +427,30 @@ fn render_tabs(
                 (fg(style.r, style.g, style.b), fg(120, 220, 220), false)
             };
 
-            // Leading space
             let _ = write!(buf, "{tab_bg_str} ");
             *col += 1;
-
-            // Symbol
             let _ = write!(buf, "{sym_fg}{}", style.symbol);
             *col += display_width(style.symbol);
 
-            // Space + name
             if !truncated.is_empty() {
                 let bold_str = if name_bold { BOLD } else { "" };
                 let _ = write!(buf, " {bold_str}{name_fg}{truncated}{RESET}{tab_bg_str}");
                 *col += 1 + display_width(&truncated);
             }
 
-            // Elapsed suffix
             if let Some(ref es) = elapsed_strs[i] {
-                if *col + 1 + es.len() + 1 < cols {
-                    let _ = write!(buf, " {}{es}", fg(165, 160, 180));
-                    *col += 1 + es.len();
-                }
+                let _ = write!(buf, " {}{es}", fg(165, 160, 180));
+                *col += 1 + es.len();
             }
 
-            // Fullscreen indicator
-            if tab.is_fullscreen_active && *col + 3 < cols {
+            if tab.is_fullscreen_active {
                 let _ = write!(buf, " {}F{RESET}{tab_bg_str}", fg(255, 200, 60));
                 *col += 2;
             }
 
-            // Trailing space
             let _ = write!(buf, " ");
             *col += 1;
 
-            // Click region: if any session is waiting, use its pane_id for focus
             let waiting_session = state
                 .sessions
                 .values()
@@ -401,6 +458,7 @@ fn render_tabs(
                 .find(|s| matches!(s.activity, Activity::Waiting));
 
             state.click_regions.push(ClickRegion {
+                row,
                 start_col: region_start,
                 end_col: *col,
                 tab_index: tab.position,
@@ -408,7 +466,6 @@ fn render_tabs(
                 is_waiting: waiting_session.is_some(),
             });
         } else {
-            // Non-Claude tab: dimmer, no symbol
             let name_fg = if is_active {
                 fg(220, 215, 230)
             } else {
@@ -416,28 +473,25 @@ fn render_tabs(
             };
             let name_bold = is_active;
 
-            // Leading space
             let _ = write!(buf, "{tab_bg_str} ");
             *col += 1;
 
-            // Name only (no symbol)
             if !truncated.is_empty() {
                 let bold_str = if name_bold { BOLD } else { "" };
                 let _ = write!(buf, "{bold_str}{name_fg}{truncated}{RESET}{tab_bg_str}");
                 *col += display_width(&truncated);
             }
 
-            // Fullscreen indicator
-            if tab.is_fullscreen_active && *col + 3 < cols {
+            if tab.is_fullscreen_active {
                 let _ = write!(buf, " {}F{RESET}{tab_bg_str}", fg(255, 200, 60));
                 *col += 2;
             }
 
-            // Trailing space
             let _ = write!(buf, " ");
             *col += 1;
 
             state.click_regions.push(ClickRegion {
+                row,
                 start_col: region_start,
                 end_col: *col,
                 tab_index: tab.position,
@@ -449,10 +503,8 @@ fn render_tabs(
         prev_bg = tab_bg;
     }
 
-    // Arrow from last tab → bar background (only if we rendered any tabs)
-    if prev_bg != prefix_bg || count > 0 {
-        arrow(buf, col, prev_bg, BAR_BG);
-    }
+    arrow(buf, col, prev_bg, BAR_BG);
+    row
 }
 
 fn notify_mode_label(mode: NotifyMode) -> (&'static str, &'static str, String, String) {
