@@ -558,15 +558,22 @@ impl State {
                         Some("cursor") => "cursor-agent",
                         _ => "claude",
                     };
-                    let _ = write!(out, "        pane command=\"{bin}\"");
+                    // Wrap in `bash -ic` so user shell aliases (e.g. claude
+                    // adding --dangerously-skip-permissions) take effect.
+                    // `exec bash` keeps the pane alive after the agent exits.
+                    let inner = format!(
+                        "{bin} --resume {}; exec bash",
+                        kdl_escape(&s.session_id)
+                    );
+                    let _ = write!(out, "        pane command=\"bash\"");
                     if let Some(cwd) = s.cwd.as_deref().filter(|c| !c.is_empty()) {
                         let _ = write!(out, " cwd=\"{}\"", kdl_escape(cwd));
                     }
                     out.push_str(" {\n");
                     let _ = writeln!(
                         out,
-                        "            args \"--resume\" \"{}\"",
-                        kdl_escape(&s.session_id)
+                        "            args \"-ic\" \"{}\"",
+                        kdl_escape(&inner)
                     );
                     out.push_str("        }\n");
                 }
