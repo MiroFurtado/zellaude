@@ -18,11 +18,24 @@ INPUT=$(cat)
 
 # Extract fields with jq (required dependency)
 HOOK_EVENT=$(echo "$INPUT" | jq -r '.hook_event_name // empty')
-SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // empty')
+SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // .conversation_id // empty')
 TOOL_NAME=$(echo "$INPUT" | jq -r '.tool_name // empty')
 CWD=$(echo "$INPUT" | jq -r '.cwd // empty')
 
 [ -z "$HOOK_EVENT" ] && exit 0
+
+# Normalize cursor-agent events (camelCase) to the internal PascalCase names
+# the plugin already understands. Claude events pass through unchanged.
+case "$HOOK_EVENT" in
+  sessionStart)        HOOK_EVENT="SessionStart" ;;
+  sessionEnd)          HOOK_EVENT="SessionEnd" ;;
+  preToolUse)          HOOK_EVENT="PreToolUse" ;;
+  postToolUse)         HOOK_EVENT="PostToolUse" ;;
+  postToolUseFailure)  HOOK_EVENT="PostToolUseFailure" ;;
+  beforeSubmitPrompt)  HOOK_EVENT="UserPromptSubmit" ;;
+  stop)                HOOK_EVENT="Stop" ;;
+  subagentStop)        HOOK_EVENT="SubagentStop" ;;
+esac
 
 # Build compact JSON payload
 PAYLOAD=$(jq -nc \
@@ -134,5 +147,6 @@ if [ "$HOOK_EVENT" = "PermissionRequest" ]; then
   fi
 fi
 
-# Send to plugin (hook is already async, no need to background)
-zellij pipe --name "zellaude" -- "$PAYLOAD"
+# Send to plugin. Discard stdout/stderr because cursor-agent reads stdout
+# as the hook's JSON response and would error on non-JSON output.
+zellij pipe --name "zellaude" -- "$PAYLOAD" >/dev/null 2>&1

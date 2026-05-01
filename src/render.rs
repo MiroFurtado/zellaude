@@ -33,7 +33,7 @@ fn activity_style(activity: &Activity) -> Style {
         Activity::Thinking => Style { symbol: "●", r: 180, g: 140, b: 255 },
         Activity::Tool(name) => {
             let symbol = match name.as_str() {
-                "Bash" => "⚡",
+                "Bash" | "Shell" => "⚡",
                 "Read" | "Glob" | "Grep" => "◉",
                 "Edit" | "Write" => "✎",
                 "Task" => "⊜",
