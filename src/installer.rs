@@ -19,15 +19,7 @@ const INSTALL_TEMPLATE: &str = r##"set -e
 HOOK_PATH="$HOME/.config/zellij/plugins/zellaude-hook.sh"
 SETTINGS="$HOME/.claude/settings.json"
 CURSOR_HOOKS="$HOME/.cursor/hooks.json"
-
-# Check if already current (Claude + Cursor both registered)
-if grep -qF '__VERSION_TAG__' "$HOOK_PATH" 2>/dev/null; then
-  if [ -f "$SETTINGS" ] && grep -qF "$HOOK_PATH" "$SETTINGS" 2>/dev/null \
-     && [ -f "$CURSOR_HOOKS" ] && grep -qF "$HOOK_PATH" "$CURSOR_HOOKS" 2>/dev/null; then
-    echo "current"
-    exit 0
-  fi
-fi
+CODEX_HOOKS="$HOME/.codex/hooks.json"
 
 # Write hook script
 mkdir -p "$(dirname "$HOOK_PATH")"
@@ -57,7 +49,7 @@ jq '
     .hooks |= with_entries(
       .value |= [
         .[] | . as $group |
-        ($group.hooks // []) | map(select((.command // "") | endswith("zellaude-hook.sh") | not)) |
+        ($group.hooks // []) | map(select((.command // "") | test("zellaude-hook\\.sh(\\s+claude)?\\s*$") | not)) |
         . as $filtered |
         if length > 0 then ($group | .hooks = $filtered) else empty end
       ]
@@ -67,7 +59,7 @@ jq '
 ' "$SETTINGS" > "$tmp" && mv "$tmp" "$SETTINGS"
 
 EVENTS='["PreToolUse","PostToolUse","PostToolUseFailure","UserPromptSubmit","PermissionRequest","Notification","Stop","SubagentStop","SessionStart","SessionEnd"]'
-ENTRY=$(jq -nc --arg cmd "$HOOK_PATH" '[{"hooks": [{"type": "command", "command": $cmd, "timeout": 5, "async": true}]}]')
+ENTRY=$(jq -nc --arg cmd "$HOOK_PATH claude" '[{"hooks": [{"type": "command", "command": $cmd, "timeout": 5, "async": true}]}]')
 tmp=$(mktemp)
 jq --argjson events "$EVENTS" --argjson entry "$ENTRY" '
   .hooks //= {} |
@@ -102,6 +94,41 @@ jq --argjson events "$CURSOR_EVENTS" --argjson entry "$CURSOR_ENTRY" '
   .hooks //= {} |
   reduce ($events[]) as $event (.; .hooks[$event] = (.hooks[$event] // []) + $entry)
 ' "$CURSOR_HOOKS" > "$tmp" && mv "$tmp" "$CURSOR_HOOKS"
+
+# --- Codex CLI: ~/.codex/hooks.json ---
+# Codex uses the same matcher-group shape as Claude, but async hooks are not
+# supported there. Only register when ~/.codex already exists.
+if [ -d "$HOME/.codex" ]; then
+  if [ ! -f "$CODEX_HOOKS" ]; then
+    mkdir -p "$HOME/.codex"
+    echo '{}' > "$CODEX_HOOKS"
+  fi
+
+  cp "$CODEX_HOOKS" "$CODEX_HOOKS.bak"
+
+  tmp=$(mktemp)
+  jq '
+    if .hooks and (.hooks | type == "object") then
+      .hooks |= with_entries(
+        .value |= [
+          .[] | . as $group |
+          ($group.hooks // []) | map(select((.command // "") | test("zellaude-hook\\.sh\\s+codex\\s*$") | not)) |
+          . as $filtered |
+          if length > 0 then ($group | .hooks = $filtered) else empty end
+        ]
+      ) | .hooks |= with_entries(select(.value | length > 0)) |
+      if .hooks == {} then del(.hooks) else . end
+    else . end
+  ' "$CODEX_HOOKS" > "$tmp" && mv "$tmp" "$CODEX_HOOKS"
+
+  CODEX_EVENTS='["SessionStart","PreToolUse","PostToolUse","UserPromptSubmit","PermissionRequest","Stop"]'
+  CODEX_ENTRY=$(jq -nc --arg cmd "$HOOK_PATH codex" '[{"hooks": [{"type": "command", "command": $cmd, "timeout": 5}]}]')
+  tmp=$(mktemp)
+  jq --argjson events "$CODEX_EVENTS" --argjson entry "$CODEX_ENTRY" '
+    .hooks //= {} |
+    reduce ($events[]) as $event (.; .hooks[$event] = (.hooks[$event] // []) + $entry)
+  ' "$CODEX_HOOKS" > "$tmp" && mv "$tmp" "$CODEX_HOOKS"
+fi
 
 echo "installed"
 "##;

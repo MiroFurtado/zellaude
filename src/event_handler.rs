@@ -14,6 +14,7 @@ pub fn handle_hook_event(state: &mut State, payload: HookPayload) {
     // SessionEnd → remove session (never drop: terminal cleanup)
     if event == "SessionEnd" {
         if state.sessions.remove(&payload.pane_id).is_some() {
+            state.clear_agent_pane_name(payload.pane_id);
             state.state_dirty = true;
         }
         return;
@@ -46,6 +47,7 @@ pub fn handle_hook_event(state: &mut State, payload: HookPayload) {
                     session.last_ts_ms = ts_ms;
                 }
                 state.state_dirty = true;
+                state.sync_pane_name_for_session(payload.pane_id);
             }
             return;
         }
@@ -112,5 +114,6 @@ pub fn handle_hook_event(state: &mut State, payload: HookPayload) {
         session.tab_index = Some(idx);
         session.tab_name = Some(name);
     }
+    state.sync_pane_name_for_session(payload.pane_id);
     state.state_dirty = true;
 }

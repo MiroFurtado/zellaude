@@ -4,7 +4,10 @@ mod render;
 mod state;
 mod tab_pane_map;
 
-use state::{unix_now, unix_now_ms, HookPayload, MenuAction, SessionInfo, Settings, State, ViewMode};
+use state::{
+    unix_now, unix_now_ms, Activity, HookPayload, MenuAction, SessionInfo, Settings, State,
+    ViewMode,
+};
 use std::collections::BTreeMap;
 use zellij_tile::prelude::*;
 
@@ -96,7 +99,7 @@ impl ZellijPlugin for State {
                                 && col < region.end_col
                             {
                                 if region.is_waiting {
-                                    focus_terminal_pane(region.pane_id, false);
+                                    focus_terminal_pane(region.pane_id, false, false);
                                 } else {
                                     switch_tab_to(region.tab_index as u32 + 1);
                                 }
@@ -232,7 +235,7 @@ impl ZellijPlugin for State {
                 // Notification click — focus the requested pane
                 if let Some(ref payload) = pipe_message.payload {
                     if let Ok(pane_id) = payload.trim().parse::<u32>() {
-                        focus_terminal_pane(pane_id, false);
+                        focus_terminal_pane(pane_id, false, false);
                     }
                 }
                 false
@@ -288,11 +291,40 @@ impl ZellijPlugin for State {
     }
 
     fn render(&mut self, rows: usize, cols: usize) {
-        render::render_status_bar(self, rows, cols);
+        let result = render::render_status_bar(self, rows, cols);
+        self.maybe_auto_resize(rows.max(1), result.desired_rows);
     }
 }
 
 impl State {
+    fn maybe_auto_resize(&mut self, current_rows: usize, desired_rows: usize) {
+        let desired_rows = desired_rows.clamp(1, 2);
+        if self.pending_auto_resize_rows == Some(current_rows) {
+            self.pending_auto_resize_rows = None;
+        }
+        if desired_rows == current_rows {
+            self.pending_auto_resize_rows = None;
+            return;
+        }
+        if self.pending_auto_resize_rows == Some(desired_rows) {
+            return;
+        }
+        if let Some(pid) = self.plugin_pane_id {
+            let resize = if desired_rows > current_rows {
+                Resize::Increase
+            } else {
+                Resize::Decrease
+            };
+            let strategy = ResizeStrategy {
+                resize,
+                direction: Some(Direction::Down),
+                invert_on_boundaries: true,
+            };
+            resize_pane_with_id(strategy, PaneId::Plugin(pid));
+            self.pending_auto_resize_rows = Some(desired_rows);
+        }
+    }
+
     fn rebuild_pane_map(&mut self) {
         if let Some(ref manifest) = self.pane_manifest {
             self.pane_to_tab = tab_pane_map::build_pane_to_tab_map(&self.tabs, manifest);
@@ -317,21 +349,30 @@ impl State {
         if self.sessions.len() != before {
             self.state_dirty = true;
         }
+        let live_panes: std::collections::HashSet<u32> =
+            self.pane_to_tab.keys().copied().collect();
+        self.applied_pane_names
+            .retain(|pane_id, _| live_panes.contains(pane_id));
     }
 
     fn cleanup_stale_sessions(&mut self) -> bool {
         let now = unix_now();
         let mut changed = false;
+        let mut renamed_panes = Vec::new();
         for session in self.sessions.values_mut() {
             match session.activity {
                 state::Activity::Done | state::Activity::AgentDone => {
                     if now.saturating_sub(session.last_event_ts) >= DONE_TIMEOUT {
                         session.activity = state::Activity::Idle;
+                        renamed_panes.push(session.pane_id);
                         changed = true;
                     }
                 }
                 _ => {}
             }
+        }
+        for pane_id in renamed_panes {
+            self.sync_pane_name_for_session(pane_id);
         }
         changed
     }
@@ -431,6 +472,7 @@ impl State {
                     session.tab_name = Some(name.clone());
                 }
                 self.sessions.insert(pane_id, session);
+                self.sync_pane_name_for_session(pane_id);
                 self.state_dirty = true;
             }
         }
@@ -536,7 +578,7 @@ impl State {
         out.push_str("layout {\n");
         out.push_str("    default_tab_template {\n");
         out.push_str(
-            "        pane size=2 borderless=true {\n            \
+            "        pane size=1 borderless=true {\n            \
              plugin location=\"file:~/.config/zellij/plugins/zellaude.wasm\"\n        }\n",
         );
         out.push_str("        children\n    }\n\n");
@@ -556,15 +598,18 @@ impl State {
                 Some(s) if !s.session_id.is_empty() => {
                     let bin = match s.agent.as_deref() {
                         Some("cursor") => "cursor-agent",
+                        Some("codex") => "codex",
                         _ => "claude",
                     };
                     // Wrap in `bash -ic` so user shell aliases (e.g. claude
                     // adding --dangerously-skip-permissions) take effect.
                     // `exec bash` keeps the pane alive after the agent exits.
-                    let inner = format!(
-                        "{bin} --resume {}; exec bash",
-                        kdl_escape(&s.session_id)
-                    );
+                    let resume_args = if s.agent.as_deref() == Some("codex") {
+                        format!("resume {}", kdl_escape(&s.session_id))
+                    } else {
+                        format!("--resume {}", kdl_escape(&s.session_id))
+                    };
+                    let inner = format!("{bin} {resume_args}; exec bash");
                     let _ = write!(out, "        pane command=\"bash\"");
                     if let Some(cwd) = s.cwd.as_deref().filter(|c| !c.is_empty()) {
                         let _ = write!(out, " cwd=\"{}\"", kdl_escape(cwd));
@@ -595,6 +640,56 @@ impl State {
         out.push_str("}\n");
         out
     }
+
+    pub(crate) fn sync_pane_name_for_session(&mut self, pane_id: u32) {
+        let Some(session) = self.sessions.get(&pane_id) else {
+            return;
+        };
+        let name = format_pane_name(session);
+        if self.applied_pane_names.get(&pane_id) == Some(&name) {
+            return;
+        }
+        rename_terminal_pane(pane_id, &name);
+        self.applied_pane_names.insert(pane_id, name);
+    }
+
+    pub(crate) fn clear_agent_pane_name(&mut self, pane_id: u32) {
+        if self.applied_pane_names.remove(&pane_id).is_some() {
+            rename_terminal_pane(pane_id, "");
+        }
+    }
+}
+
+fn format_pane_name(session: &SessionInfo) -> String {
+    let agent = match session.agent.as_deref() {
+        Some("codex") => "Codex",
+        Some("cursor") => "Cursor",
+        _ => "Claude",
+    };
+    match &session.activity {
+        Activity::Init => format!("◆ {agent}"),
+        Activity::Thinking => format!("● {agent}"),
+        Activity::Tool(name) if !name.is_empty() => {
+            format!("⚡ {agent} {}", compact_tool_name(name))
+        }
+        Activity::Tool(_) => format!("⚡ {agent}"),
+        Activity::Prompting => format!("▶ {agent}"),
+        Activity::Waiting => format!("⚠ {agent}"),
+        Activity::Notification => format!("◇ {agent}"),
+        Activity::Done | Activity::AgentDone => format!("✓ {agent}"),
+        Activity::Idle => format!("○ {agent}"),
+    }
+}
+
+fn compact_tool_name(name: &str) -> String {
+    const MAX_CHARS: usize = 18;
+    let trimmed = name.trim();
+    if trimmed.chars().count() <= MAX_CHARS {
+        return trimmed.to_string();
+    }
+    let mut out: String = trimmed.chars().take(MAX_CHARS.saturating_sub(1)).collect();
+    out.push('…');
+    out
 }
 
 fn kdl_escape(s: &str) -> String {

@@ -76,6 +76,10 @@ const TAB_BG_ACTIVE: Color = (140, 100, 200);
 const TAB_BG_INACTIVE: Color = (80, 75, 110);
 const FLASH_BG_BRIGHT: Color = (80, 80, 30);
 
+pub struct RenderResult {
+    pub desired_rows: usize,
+}
+
 /// Write a powerline arrow: fg=from_bg, bg=to_bg, then separator char.
 fn arrow(buf: &mut String, col: &mut usize, from: Color, to: Color) {
     let _ = write!(
@@ -116,7 +120,7 @@ fn mode_style(mode: InputMode) -> (Color, &'static str) {
     }
 }
 
-pub fn render_status_bar(state: &mut State, rows: usize, cols: usize) {
+pub fn render_status_bar(state: &mut State, rows: usize, cols: usize) -> RenderResult {
     state.click_regions.clear();
     state.menu_click_regions.clear();
 
@@ -140,7 +144,7 @@ pub fn render_status_bar(state: &mut State, rows: usize, cols: usize) {
         let _ = write!(buf, "{RESET}");
         print!("{buf}");
         let _ = std::io::stdout().flush();
-        return;
+        return RenderResult { desired_rows: 1 };
     }
 
     let prefix_bg = if state.view_mode == ViewMode::Settings {
@@ -149,14 +153,13 @@ pub fn render_status_bar(state: &mut State, rows: usize, cols: usize) {
         PREFIX_BG
     };
 
-    // Build prefix: " Zellaude (session) MODE "
+    // Build prefix: " session MODE "
     let (mode_bg, mode_text) = mode_style(state.input_mode);
     let show_mode = state.settings.mode_indicator;
-    let session_part = match state.zellij_session_name.as_deref() {
-        Some(name) => format!(" ({name})"),
-        None => String::new(),
+    let prefix_text = match state.zellij_session_name.as_deref() {
+        Some(name) => format!(" {name} "),
+        None => String::from(" "),
     };
-    let prefix_text = format!(" Zellaude{session_part} ");
     let prefix_width = display_width(&prefix_text);
     let mode_pill_width = if show_mode { 1 + mode_text.len() + 1 } else { 0 };
     let total_prefix_width = prefix_width + mode_pill_width;
@@ -203,7 +206,7 @@ pub fn render_status_bar(state: &mut State, rows: usize, cols: usize) {
     let last_prefix_bg = if show_mode && total_prefix_width <= cols { mode_bg } else { prefix_bg };
     let prefix_used = col;
 
-    let last_row: usize = if col < cols {
+    let tab_result = if col < cols {
         match state.view_mode {
             ViewMode::Normal => render_tabs(
                 state,
@@ -218,12 +221,13 @@ pub fn render_status_bar(state: &mut State, rows: usize, cols: usize) {
                 arrow(&mut buf, &mut col, last_prefix_bg, BAR_BG);
                 let _ = write!(buf, "{bar_bg_str}");
                 render_settings_menu(state, &mut buf, &mut col);
-                1
+                TabRenderResult { last_row: 1, overflowed: false }
             }
         }
     } else {
-        1
+        TabRenderResult { last_row: 1, overflowed: true }
     };
+    let last_row = tab_result.last_row;
 
     // Fill rest of the last rendered row
     if col < cols {
@@ -244,9 +248,20 @@ pub fn render_status_bar(state: &mut State, rows: usize, cols: usize) {
 
     print!("{buf}");
     let _ = std::io::stdout().flush();
+
+    let desired_rows = if state.view_mode == ViewMode::Normal && tab_result.overflowed {
+        2
+    } else {
+        last_row.max(1).min(2)
+    };
+    RenderResult { desired_rows }
 }
 
-/// Returns the last row (1-based) on which content was rendered.
+struct TabRenderResult {
+    last_row: usize,
+    overflowed: bool,
+}
+
 fn render_tabs(
     state: &mut State,
     buf: &mut String,
@@ -255,7 +270,7 @@ fn render_tabs(
     rows: usize,
     prefix_bg: Color,
     prefix_width: usize,
-) -> usize {
+) -> TabRenderResult {
     let now_s = unix_now();
     let now_ms = unix_now_ms();
     let bar_bg_str = bg(BAR_BG.0, BAR_BG.1, BAR_BG.2);
@@ -266,7 +281,7 @@ fn render_tabs(
     let count = tabs.len();
     if count == 0 {
         arrow(buf, col, prefix_bg, BAR_BG);
-        return 1;
+        return TabRenderResult { last_row: 1, overflowed: false };
     }
 
     let best_sessions: Vec<Option<&SessionInfo>> = tabs
@@ -376,10 +391,10 @@ fn render_tabs(
 
                 // If it still doesn't fit on the next row, give up.
                 if *col + 1 + content_width + close_reserve > cols {
-                    break;
+                    return TabRenderResult { last_row: row, overflowed: true };
                 }
             } else {
-                break;
+                return TabRenderResult { last_row: row, overflowed: true };
             }
         }
 
@@ -504,7 +519,7 @@ fn render_tabs(
     }
 
     arrow(buf, col, prev_bg, BAR_BG);
-    row
+    TabRenderResult { last_row: row, overflowed: false }
 }
 
 fn notify_mode_label(mode: NotifyMode) -> (&'static str, &'static str, String, String) {

@@ -43,7 +43,7 @@ pub struct SessionInfo {
     pub cwd: Option<String>,
     #[serde(default)]
     pub last_ts_ms: u64,
-    /// "claude" or "cursor" — used to pick the right resume command in the
+    /// "claude", "cursor", or "codex" — used to pick the right resume command in the
     /// generated layout. Optional because pre-existing persisted state won't
     /// have it.
     #[serde(default)]
@@ -176,6 +176,8 @@ pub struct State {
     /// This plugin instance's own pane id — cached so we can address ourselves
     /// for self-resize without needing focus.
     pub plugin_pane_id: Option<u32>,
+    /// Row count requested by auto-resize but not yet observed in render.
+    pub pending_auto_resize_rows: Option<usize>,
     /// True once we've fired the disk-load request (prevents duplicate loads).
     pub state_load_started: bool,
     /// True once the disk-load result has been processed. Save is gated on this
@@ -184,4 +186,7 @@ pub struct State {
     pub state_loaded: bool,
     /// True when sessions have changed since the last save_state.
     pub state_dirty: bool,
+    /// pane_id -> last pane name applied by zellaude. Used to avoid sending
+    /// redundant rename commands on every timer/event pass.
+    pub applied_pane_names: HashMap<u32, String>,
 }

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # zellaude-transfer-tab.sh — Open a new tab in the current zellij session that
-# resumes a claude/cursor-agent session from another zellij session's snapshot.
+# resumes a claude/cursor-agent/codex session from another zellij session's snapshot.
 #
 # Reads zellaude's persisted state and uses `zellij action new-tab --layout`
 # to spawn a tab with the right resume command in the right cwd.
@@ -113,6 +113,7 @@ fi
 
 BIN="claude"
 [ "$AGENT" = "cursor" ] && BIN="cursor-agent"
+[ "$AGENT" = "codex" ] && BIN="codex"
 
 # Escape " and \ for kdl string literals.
 kdl_escape() { printf '%s' "$1" | sed -e 's|\\|\\\\|g' -e 's|"|\\"|g'; }
@@ -127,7 +128,11 @@ trap 'rm -f "$LAYOUT"' EXIT
 # `claude --dangerously-skip-permissions`) are honored. `exec bash` keeps the
 # pane alive after the agent exits so you can restart it without rebuilding
 # the tab.
-INNER="$BIN --resume $SID_E; exec bash"
+if [ "$AGENT" = "codex" ]; then
+  INNER="$BIN resume $SID_E; exec bash"
+else
+  INNER="$BIN --resume $SID_E; exec bash"
+fi
 INNER_E=$(kdl_escape "$INNER")
 
 cat > "$LAYOUT" <<EOF

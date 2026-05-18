@@ -1,9 +1,14 @@
 #!/usr/bin/env bash
-# zellaude-hook.sh — Claude Code hook → zellij pipe bridge
+# zellaude-hook.sh — Claude Code / cursor-agent / Codex CLI hook → zellij pipe bridge
 # Forwards hook events to the zellaude Zellij plugin via pipe.
 #
 # Usage in ~/.claude/settings.json hooks:
-#   "command": "/path/to/zellaude-hook.sh"
+#   "command": "/path/to/zellaude-hook.sh claude"
+# Usage in ~/.codex/hooks.json hooks:
+#   "command": "/path/to/zellaude-hook.sh codex"
+
+# Agent type (claude|cursor|codex); empty preserves legacy payload detection.
+AGENT_ARG="${1:-}"
 
 # Exit silently if not running inside Zellij
 [ -z "$ZELLIJ_SESSION_NAME" ] && exit 0
@@ -24,7 +29,11 @@ CWD=$(echo "$INPUT" | jq -r '.cwd // empty')
 
 # Identify which agent fired this hook so the plugin can later snapshot the
 # right resume command. cursor-agent's payload always includes cursor_version.
-AGENT=$(echo "$INPUT" | jq -r 'if has("cursor_version") then "cursor" else "claude" end')
+if [ -n "$AGENT_ARG" ]; then
+  AGENT="$AGENT_ARG"
+else
+  AGENT=$(echo "$INPUT" | jq -r 'if has("cursor_version") then "cursor" else "claude" end')
+fi
 
 [ -z "$HOOK_EVENT" ] && exit 0
 
@@ -116,7 +125,11 @@ if [ "$HOOK_EVENT" = "PermissionRequest" ]; then
   if [ "$SHOULD_NOTIFY" = true ]; then
     TOOL_SUFFIX=""
     [ -n "$TOOL_NAME" ] && TOOL_SUFFIX=" — $TOOL_NAME"
-    TITLE="⚠ Claude Code"
+    case "$AGENT" in
+      codex)  TITLE="⚠ Codex CLI" ;;
+      cursor) TITLE="⚠ Cursor Agent" ;;
+      *)      TITLE="⚠ Claude Code" ;;
+    esac
     MESSAGE="Permission requested${TOOL_SUFFIX}"
 
     # Rate-limit: one notification per pane per 10 seconds
@@ -153,6 +166,14 @@ if [ "$HOOK_EVENT" = "PermissionRequest" ]; then
   fi
 fi
 
-# Send to plugin. Discard stdout/stderr because cursor-agent reads stdout
-# as the hook's JSON response and would error on non-JSON output.
-zellij pipe --name "zellaude" -- "$PAYLOAD" >/dev/null 2>&1
+# Send to plugin. Discard stdout/stderr because cursor-agent/Codex read stdout
+# as the hook's JSON response and would error on non-JSON output. Try the
+# PATH zellij first, then /usr/bin/zellij for sessions still running an older
+# distro-packaged server after a user-local zellij upgrade.
+if command -v zellij >/dev/null 2>&1; then
+  zellij pipe --name "zellaude" -- "$PAYLOAD" >/dev/null 2>&1 || \
+    [ ! -x /usr/bin/zellij ] || /usr/bin/zellij pipe --name "zellaude" -- "$PAYLOAD" >/dev/null 2>&1 || true
+elif [ -x /usr/bin/zellij ]; then
+  /usr/bin/zellij pipe --name "zellaude" -- "$PAYLOAD" >/dev/null 2>&1 || true
+fi
+exit 0
