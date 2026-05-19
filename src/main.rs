@@ -668,12 +668,18 @@ impl State {
             return;
         };
         let icon = activity_icon(session);
-        let base = self
-            .pane_base_names
-            .get(&pane_id)
-            .map(String::as_str)
-            .unwrap_or("")
-            .trim();
+        let base = strip_elapsed_suffix(
+            self
+                .pane_base_names
+                .get(&pane_id)
+                .map(String::as_str)
+                .unwrap_or("")
+                .trim(),
+        );
+        if self.pane_base_names.get(&pane_id) != Some(&base) {
+            self.pane_base_names.insert(pane_id, base.clone());
+        }
+        let base = base.trim();
         let name = if base.is_empty() {
             match format_pane_elapsed(session, self.settings.elapsed_time) {
                 Some(elapsed) => format!("{icon} ({elapsed})"),
@@ -781,18 +787,18 @@ fn format_pane_elapsed(session: &SessionInfo, enabled: bool) -> Option<String> {
 }
 
 fn strip_elapsed_suffix(s: &str) -> String {
-    let trimmed = s.trim();
-    let Some(prefix) = trimmed.strip_suffix(')') else {
-        return trimmed.to_string();
-    };
-    let Some(open_idx) = prefix.rfind('(') else {
-        return trimmed.to_string();
-    };
-    let elapsed = prefix[(open_idx + 1)..].trim();
-    if is_elapsed_label(elapsed) {
-        prefix[..open_idx].trim_end().to_string()
-    } else {
-        trimmed.to_string()
+    let mut current = s.trim().to_string();
+    loop {
+        let trimmed = current.trim_end();
+        let candidate = trimmed.strip_suffix(')').unwrap_or(trimmed);
+        let Some(open_idx) = candidate.rfind('(') else {
+            return trimmed.to_string();
+        };
+        let elapsed = candidate[(open_idx + 1)..].trim();
+        if !is_elapsed_label(elapsed) {
+            return trimmed.to_string();
+        }
+        current = candidate[..open_idx].trim_end().to_string();
     }
 }
 
