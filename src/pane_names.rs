@@ -39,6 +39,7 @@ pub fn format_elapsed(elapsed: u64, enabled: bool) -> Option<String> {
 pub fn compose(activity: PaneActivity, base: &str, elapsed: Option<&str>) -> String {
     let icon = activity_icon(activity);
     let base = strip_elapsed_suffix(base);
+    let base = strip_transient_prefix(&base);
     let base = base.trim();
     match (base.is_empty(), elapsed) {
         (true, Some(elapsed)) => format!("{icon} ({elapsed})"),
@@ -80,10 +81,11 @@ pub fn strip_status_prefix(name: &str) -> String {
         return String::new();
     };
     if !is_status_icon(icon) {
-        return strip_elapsed_suffix(trimmed);
+        return strip_transient_prefix(&strip_elapsed_suffix(trimmed));
     }
     let rest = trimmed[icon.len_utf8()..].trim_start();
     let rest = strip_elapsed_suffix(rest);
+    let rest = strip_transient_prefix(&rest);
     if rest.is_empty() || starts_with_agent_label(&rest) {
         String::new()
     } else {
@@ -125,6 +127,24 @@ fn starts_with_agent_label(s: &str) -> bool {
         .any(|agent| s == *agent || s.starts_with(&format!("{agent} ")))
 }
 
+fn strip_transient_prefix(s: &str) -> String {
+    let trimmed = s.trim_start();
+    let mut chars = trimmed.chars();
+    let Some(first) = chars.next() else {
+        return String::new();
+    };
+    let rest = chars.as_str();
+    if is_braille_pattern(first) && rest.starts_with(char::is_whitespace) {
+        rest.trim_start().to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn is_braille_pattern(c: char) -> bool {
+    ('\u{2800}'..='\u{28ff}').contains(&c)
+}
+
 fn is_elapsed_label(s: &str) -> bool {
     let Some(unit) = s.chars().last() else {
         return false;
@@ -160,6 +180,13 @@ mod tests {
         assert_eq!(strip_status_prefix("api-server"), "api-server");
         assert_eq!(strip_status_prefix("codex"), "codex");
         assert_eq!(strip_status_prefix("Pane #3"), "Pane #3");
+    }
+
+    #[test]
+    fn strips_codex_spinner_prefix_from_titles() {
+        assert_eq!(strip_status_prefix("⠙ dotfiles"), "dotfiles");
+        assert_eq!(strip_status_prefix("◆ ⠸ dotfiles"), "dotfiles");
+        assert_eq!(compose(PaneActivity::Thinking, "⠙ dotfiles", Some("6m")), "● dotfiles (6m)");
     }
 
     #[test]
