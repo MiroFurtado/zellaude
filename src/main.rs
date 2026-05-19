@@ -183,7 +183,11 @@ impl ZellijPlugin for State {
             Event::Timer(_) => {
                 let stale_changed = self.cleanup_stale_sessions();
                 let flash_changed = self.cleanup_expired_flashes();
-                let pane_name_changed = self.sync_all_pane_names();
+                let pane_name_changed = if self.input_mode == InputMode::RenamePane {
+                    false
+                } else {
+                    self.sync_all_pane_names()
+                };
                 let has_flashes = self.has_active_flashes();
                 if has_flashes {
                     set_timeout(FLASH_TICK);
@@ -383,8 +387,10 @@ impl State {
                 _ => {}
             }
         }
-        for pane_id in renamed_panes {
-            self.sync_pane_name_for_session(pane_id);
+        if self.input_mode != InputMode::RenamePane {
+            for pane_id in renamed_panes {
+                self.sync_pane_name_for_session(pane_id);
+            }
         }
         changed
     }

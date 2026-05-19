@@ -102,7 +102,7 @@ pub fn strip_elapsed_suffix(s: &str) -> String {
             return trimmed.to_string();
         };
         let elapsed = candidate[(open_idx + 1)..].trim();
-        if !is_elapsed_label(elapsed) {
+        if !is_elapsed_fragment(elapsed) {
             return trimmed.to_string();
         }
         current = candidate[..open_idx].trim_end().to_string();
@@ -145,7 +145,10 @@ fn is_braille_pattern(c: char) -> bool {
     ('\u{2800}'..='\u{28ff}').contains(&c)
 }
 
-fn is_elapsed_label(s: &str) -> bool {
+fn is_elapsed_fragment(s: &str) -> bool {
+    if s.chars().all(|c| c.is_ascii_digit()) {
+        return !s.is_empty();
+    }
     let Some(unit) = s.chars().last() else {
         return false;
     };
@@ -195,6 +198,8 @@ mod tests {
         assert_eq!(strip_elapsed_suffix("api-server (6m"), "api-server");
         assert_eq!(strip_elapsed_suffix("api-server (6m (6m)"), "api-server");
         assert_eq!(strip_elapsed_suffix("api-server (6m) (7m)"), "api-server");
+        assert_eq!(strip_elapsed_suffix("api-server (2 (2 (2 (5 (2m)"), "api-server");
+        assert_eq!(strip_elapsed_suffix("api-server (2)"), "api-server");
         assert_eq!(strip_elapsed_suffix("api-server (build)"), "api-server (build)");
     }
 
@@ -282,6 +287,10 @@ mod tests {
         );
         assert_eq!(
             compose(PaneActivity::Thinking, "api-server (6m (6m)", Some("7m")),
+            "● api-server (7m)"
+        );
+        assert_eq!(
+            compose(PaneActivity::Thinking, "api-server (2 (2 (2 (5 (2m)", Some("7m")),
             "● api-server (7m)"
         );
     }
