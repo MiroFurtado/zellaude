@@ -53,8 +53,16 @@ backup() {
   fi
 }
 
+ensure_json_object() {
+  local f=$1
+  if [ ! -s "$f" ] || ! jq -e 'type == "object"' "$f" >/dev/null 2>&1; then
+    echo '{}' > "$f"
+  fi
+}
+
 uninstall_claude() {
   [ -f "$CLAUDE_SETTINGS" ] || return 0
+  ensure_json_object "$CLAUDE_SETTINGS"
   backup "$CLAUDE_SETTINGS"
   local tmp
   tmp=$(mktemp)
@@ -80,6 +88,7 @@ uninstall_claude() {
 
 uninstall_cursor() {
   [ -f "$CURSOR_HOOKS" ] || return 0
+  ensure_json_object "$CURSOR_HOOKS"
   backup "$CURSOR_HOOKS"
   local tmp
   tmp=$(mktemp)
@@ -97,6 +106,7 @@ uninstall_cursor() {
 
 uninstall_codex() {
   [ -f "$CODEX_HOOKS" ] || return 0
+  ensure_json_object "$CODEX_HOOKS"
   backup "$CODEX_HOOKS"
   local tmp
   tmp=$(mktemp)
@@ -122,6 +132,7 @@ install_claude() {
     mkdir -p "$(dirname "$CLAUDE_SETTINGS")"
     echo '{}' > "$CLAUDE_SETTINGS"
   fi
+  ensure_json_object "$CLAUDE_SETTINGS"
   backup "$CLAUDE_SETTINGS"
   uninstall_claude 2>/dev/null || true
 
@@ -140,6 +151,7 @@ install_cursor() {
     mkdir -p "$(dirname "$CURSOR_HOOKS")"
     echo '{"version":1}' > "$CURSOR_HOOKS"
   fi
+  ensure_json_object "$CURSOR_HOOKS"
   backup "$CURSOR_HOOKS"
   uninstall_cursor 2>/dev/null || true
 
@@ -163,6 +175,7 @@ install_codex() {
     mkdir -p "$(dirname "$CODEX_HOOKS")"
     echo '{}' > "$CODEX_HOOKS"
   fi
+  ensure_json_object "$CODEX_HOOKS"
   backup "$CODEX_HOOKS"
   uninstall_codex 2>/dev/null || true
 
