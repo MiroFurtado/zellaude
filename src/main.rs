@@ -657,16 +657,16 @@ impl State {
     }
 
     pub(crate) fn sync_pane_name_for_session(&mut self, pane_id: u32) {
-        let Some(session) = self.sessions.get(&pane_id) else {
-            return;
-        };
         let current_title = self.pane_titles.get(&pane_id).map(String::as_str);
         let last_applied = self.applied_pane_names.get(&pane_id).map(String::as_str);
         if current_title.is_some() && current_title != last_applied {
-            let base = strip_zellaude_status_prefix(current_title.unwrap_or(""));
-            self.pane_base_names.insert(pane_id, base);
+            let title = current_title.unwrap_or("").to_string();
+            self.maybe_update_pane_base_name(pane_id, &title);
         }
 
+        let Some(session) = self.sessions.get(&pane_id) else {
+            return;
+        };
         let icon = activity_icon(session);
         let base = self
             .pane_base_names
@@ -689,6 +689,7 @@ impl State {
             return;
         }
         rename_terminal_pane(pane_id, &name);
+        self.pane_titles.insert(pane_id, name.clone());
         self.applied_pane_names.insert(pane_id, name);
     }
 
@@ -696,6 +697,23 @@ impl State {
         let base = self.pane_base_names.remove(&pane_id).unwrap_or_default();
         if self.applied_pane_names.remove(&pane_id).is_some() {
             rename_terminal_pane(pane_id, base);
+        }
+    }
+
+    fn maybe_update_pane_base_name(&mut self, pane_id: u32, current_title: &str) {
+        let candidate = strip_zellaude_status_prefix(current_title);
+        let has_existing_base = self
+            .pane_base_names
+            .get(&pane_id)
+            .map(|name| !name.trim().is_empty())
+            .unwrap_or(false);
+
+        if current_title_starts_with_zellaude_status(current_title)
+            && (!has_existing_base || !candidate.trim().is_empty())
+        {
+            self.pane_base_names.insert(pane_id, candidate);
+        } else if !has_existing_base && !candidate.trim().is_empty() {
+            self.pane_base_names.insert(pane_id, candidate);
         }
     }
 }
@@ -732,6 +750,14 @@ fn strip_zellaude_status_prefix(name: &str) -> String {
 
 fn is_zellaude_status_icon(c: char) -> bool {
     matches!(c, '◆' | '●' | '⚡' | '▶' | '⚠' | '◇' | '✓' | '○')
+}
+
+fn current_title_starts_with_zellaude_status(name: &str) -> bool {
+    name.trim()
+        .chars()
+        .next()
+        .map(is_zellaude_status_icon)
+        .unwrap_or(false)
 }
 
 fn starts_with_agent_label(s: &str) -> bool {
