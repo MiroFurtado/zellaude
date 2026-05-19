@@ -11,6 +11,7 @@ use zellij_tile::prelude::*;
 const DONE_TIMEOUT: u64 = 30;
 const TIMER_INTERVAL: f64 = 1.0;
 const FLASH_TICK: f64 = 0.25;
+const PANE_ELAPSED_THRESHOLD: u64 = 60;
 
 register_plugin!(State);
 
@@ -176,6 +177,7 @@ impl ZellijPlugin for State {
             Event::Timer(_) => {
                 let stale_changed = self.cleanup_stale_sessions();
                 let flash_changed = self.cleanup_expired_flashes();
+                let pane_name_changed = self.sync_all_pane_names();
                 let has_flashes = self.has_active_flashes();
                 if has_flashes {
                     set_timeout(FLASH_TICK);
@@ -190,7 +192,11 @@ impl ZellijPlugin for State {
                     self.save_layout();
                     self.state_dirty = false;
                 }
-                has_flashes || stale_changed || flash_changed || self.has_elapsed_display()
+                has_flashes
+                    || stale_changed
+                    || flash_changed
+                    || pane_name_changed
+                    || self.has_elapsed_display()
             }
             Event::PermissionRequestResult(_) => {
                 // Now that permissions are granted, mark as non-selectable
@@ -410,6 +416,15 @@ impl State {
             !matches!(s.activity, state::Activity::Idle)
                 && now.saturating_sub(s.last_event_ts) >= DONE_TIMEOUT
         })
+    }
+
+    fn sync_all_pane_names(&mut self) -> bool {
+        let before = self.applied_pane_names.clone();
+        let pane_ids: Vec<u32> = self.sessions.keys().copied().collect();
+        for pane_id in pane_ids {
+            self.sync_pane_name_for_session(pane_id);
+        }
+        self.applied_pane_names != before
     }
 
     fn request_sync(&self) {
@@ -660,9 +675,15 @@ impl State {
             .unwrap_or("")
             .trim();
         let name = if base.is_empty() {
-            icon.to_string()
+            match format_pane_elapsed(session, self.settings.elapsed_time) {
+                Some(elapsed) => format!("{icon} ({elapsed})"),
+                None => icon.to_string(),
+            }
         } else {
-            format!("{icon} {base}")
+            match format_pane_elapsed(session, self.settings.elapsed_time) {
+                Some(elapsed) => format!("{icon} {base} ({elapsed})"),
+                None => format!("{icon} {base}"),
+            }
         };
         if self.applied_pane_names.get(&pane_id) == Some(&name) {
             return;
@@ -701,10 +722,11 @@ fn strip_zellaude_status_prefix(name: &str) -> String {
         return trimmed.to_string();
     }
     let rest = trimmed[icon.len_utf8()..].trim_start();
-    if rest.is_empty() || starts_with_agent_label(rest) {
+    let rest = strip_elapsed_suffix(rest);
+    if rest.is_empty() || starts_with_agent_label(&rest) {
         String::new()
     } else {
-        rest.to_string()
+        rest
     }
 }
 
@@ -716,6 +738,48 @@ fn starts_with_agent_label(s: &str) -> bool {
     ["Claude", "Codex", "Cursor"]
         .iter()
         .any(|agent| s == *agent || s.starts_with(&format!("{agent} ")))
+}
+
+fn format_pane_elapsed(session: &SessionInfo, enabled: bool) -> Option<String> {
+    if !enabled {
+        return None;
+    }
+    let elapsed = unix_now().saturating_sub(session.last_event_ts);
+    if elapsed < PANE_ELAPSED_THRESHOLD {
+        None
+    } else if elapsed < 3600 {
+        Some(format!("{}m", elapsed / 60))
+    } else {
+        Some(format!("{}h", elapsed / 3600))
+    }
+}
+
+fn strip_elapsed_suffix(s: &str) -> String {
+    let trimmed = s.trim();
+    let Some(prefix) = trimmed.strip_suffix(')') else {
+        return trimmed.to_string();
+    };
+    let Some(open_idx) = prefix.rfind('(') else {
+        return trimmed.to_string();
+    };
+    let elapsed = prefix[(open_idx + 1)..].trim();
+    if is_elapsed_label(elapsed) {
+        prefix[..open_idx].trim_end().to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn is_elapsed_label(s: &str) -> bool {
+    let Some(unit) = s.chars().last() else {
+        return false;
+    };
+    if !matches!(unit, 'm' | 'h') {
+        return false;
+    }
+    s[..s.len() - unit.len_utf8()]
+        .chars()
+        .all(|c| c.is_ascii_digit())
 }
 
 fn kdl_escape(s: &str) -> String {
