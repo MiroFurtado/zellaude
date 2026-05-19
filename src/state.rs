@@ -158,6 +158,7 @@ pub struct MenuClickRegion {
 pub struct State {
     pub sessions: BTreeMap<u32, SessionInfo>,
     pub pane_to_tab: HashMap<u32, (usize, String)>,
+    pub pane_titles: HashMap<u32, String>,
     pub tabs: Vec<TabInfo>,
     pub pane_manifest: Option<PaneManifest>,
     pub active_tab_index: Option<usize>,
@@ -189,4 +190,6 @@ pub struct State {
     /// pane_id -> last pane name applied by zellaude. Used to avoid sending
     /// redundant rename commands on every timer/event pass.
     pub applied_pane_names: HashMap<u32, String>,
+    /// pane_id -> user-controlled pane name with zellaude's status prefix stripped.
+    pub pane_base_names: HashMap<u32, String>,
 }

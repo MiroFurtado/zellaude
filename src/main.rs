@@ -4,10 +4,7 @@ mod render;
 mod state;
 mod tab_pane_map;
 
-use state::{
-    unix_now, unix_now_ms, Activity, HookPayload, MenuAction, SessionInfo, Settings, State,
-    ViewMode,
-};
+use state::{unix_now, unix_now_ms, HookPayload, MenuAction, SessionInfo, Settings, State, ViewMode};
 use std::collections::BTreeMap;
 use zellij_tile::prelude::*;
 
@@ -328,6 +325,7 @@ impl State {
     fn rebuild_pane_map(&mut self) {
         if let Some(ref manifest) = self.pane_manifest {
             self.pane_to_tab = tab_pane_map::build_pane_to_tab_map(&self.tabs, manifest);
+            self.pane_titles = tab_pane_map::build_pane_title_map(manifest);
             self.refresh_session_tab_names();
             self.remove_dead_panes();
         }
@@ -352,6 +350,8 @@ impl State {
         let live_panes: std::collections::HashSet<u32> =
             self.pane_to_tab.keys().copied().collect();
         self.applied_pane_names
+            .retain(|pane_id, _| live_panes.contains(pane_id));
+        self.pane_base_names
             .retain(|pane_id, _| live_panes.contains(pane_id));
     }
 
@@ -645,7 +645,25 @@ impl State {
         let Some(session) = self.sessions.get(&pane_id) else {
             return;
         };
-        let name = format_pane_name(session);
+        let current_title = self.pane_titles.get(&pane_id).map(String::as_str);
+        let last_applied = self.applied_pane_names.get(&pane_id).map(String::as_str);
+        if current_title.is_some() && current_title != last_applied {
+            let base = strip_zellaude_status_prefix(current_title.unwrap_or(""));
+            self.pane_base_names.insert(pane_id, base);
+        }
+
+        let icon = activity_icon(session);
+        let base = self
+            .pane_base_names
+            .get(&pane_id)
+            .map(String::as_str)
+            .unwrap_or("")
+            .trim();
+        let name = if base.is_empty() {
+            icon.to_string()
+        } else {
+            format!("{icon} {base}")
+        };
         if self.applied_pane_names.get(&pane_id) == Some(&name) {
             return;
         }
@@ -654,42 +672,50 @@ impl State {
     }
 
     pub(crate) fn clear_agent_pane_name(&mut self, pane_id: u32) {
+        let base = self.pane_base_names.remove(&pane_id).unwrap_or_default();
         if self.applied_pane_names.remove(&pane_id).is_some() {
-            rename_terminal_pane(pane_id, "");
+            rename_terminal_pane(pane_id, base);
         }
     }
 }
 
-fn format_pane_name(session: &SessionInfo) -> String {
-    let agent = match session.agent.as_deref() {
-        Some("codex") => "Codex",
-        Some("cursor") => "Cursor",
-        _ => "Claude",
-    };
+fn activity_icon(session: &SessionInfo) -> &'static str {
     match &session.activity {
-        Activity::Init => format!("◆ {agent}"),
-        Activity::Thinking => format!("● {agent}"),
-        Activity::Tool(name) if !name.is_empty() => {
-            format!("⚡ {agent} {}", compact_tool_name(name))
-        }
-        Activity::Tool(_) => format!("⚡ {agent}"),
-        Activity::Prompting => format!("▶ {agent}"),
-        Activity::Waiting => format!("⚠ {agent}"),
-        Activity::Notification => format!("◇ {agent}"),
-        Activity::Done | Activity::AgentDone => format!("✓ {agent}"),
-        Activity::Idle => format!("○ {agent}"),
+        state::Activity::Init => "◆",
+        state::Activity::Thinking => "●",
+        state::Activity::Tool(_) => "⚡",
+        state::Activity::Prompting => "▶",
+        state::Activity::Waiting => "⚠",
+        state::Activity::Notification => "◇",
+        state::Activity::Done | state::Activity::AgentDone => "✓",
+        state::Activity::Idle => "○",
     }
 }
 
-fn compact_tool_name(name: &str) -> String {
-    const MAX_CHARS: usize = 18;
+fn strip_zellaude_status_prefix(name: &str) -> String {
     let trimmed = name.trim();
-    if trimmed.chars().count() <= MAX_CHARS {
+    let Some(icon) = trimmed.chars().next() else {
+        return String::new();
+    };
+    if !is_zellaude_status_icon(icon) {
         return trimmed.to_string();
     }
-    let mut out: String = trimmed.chars().take(MAX_CHARS.saturating_sub(1)).collect();
-    out.push('…');
-    out
+    let rest = trimmed[icon.len_utf8()..].trim_start();
+    if rest.is_empty() || starts_with_agent_label(rest) {
+        String::new()
+    } else {
+        rest.to_string()
+    }
+}
+
+fn is_zellaude_status_icon(c: char) -> bool {
+    matches!(c, '◆' | '●' | '⚡' | '▶' | '⚠' | '◇' | '✓' | '○')
+}
+
+fn starts_with_agent_label(s: &str) -> bool {
+    ["Claude", "Codex", "Cursor"]
+        .iter()
+        .any(|agent| s == *agent || s.starts_with(&format!("{agent} ")))
 }
 
 fn kdl_escape(s: &str) -> String {

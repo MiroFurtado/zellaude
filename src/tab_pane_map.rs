@@ -26,3 +26,15 @@ pub fn build_pane_to_tab_map(
     }
     map
 }
+
+pub fn build_pane_title_map(manifest: &PaneManifest) -> HashMap<u32, String> {
+    let mut map = HashMap::new();
+    for panes in manifest.panes.values() {
+        for pane in panes {
+            if !pane.is_plugin {
+                map.insert(pane.id, pane.title.clone());
+            }
+        }
+    }
+    map
+}
