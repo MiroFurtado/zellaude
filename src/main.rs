@@ -70,7 +70,16 @@ impl ZellijPlugin for State {
                 true
             }
             Event::ModeUpdate(mode_info) => {
+                let previous_mode = self.input_mode;
                 self.input_mode = mode_info.mode;
+                if previous_mode != InputMode::RenamePane && self.input_mode == InputMode::RenamePane
+                {
+                    self.prepare_focused_pane_for_manual_rename();
+                } else if previous_mode == InputMode::RenamePane
+                    && self.input_mode != InputMode::RenamePane
+                {
+                    self.accept_pending_manual_renames();
+                }
                 if let Some(name) = mode_info.session_name {
                     self.zellij_session_name = Some(name);
                     self.maybe_load_state();
@@ -437,6 +446,43 @@ impl State {
             self.sync_pane_name_for_session(pane_id);
         }
         self.applied_pane_names != before
+    }
+
+    fn prepare_focused_pane_for_manual_rename(&mut self) {
+        let Some(ref manifest) = self.pane_manifest else {
+            return;
+        };
+        let Some(tab_position) = self.active_tab_index else {
+            return;
+        };
+        let Some(pane) = get_focused_pane(tab_position, manifest) else {
+            return;
+        };
+
+        let base = pane_names::editable_base_name(
+            self.pane_base_names.get(&pane.id).map(String::as_str),
+            &pane.title,
+        );
+
+        self.pending_manual_renames.insert(pane.id);
+        self.applied_pane_names.remove(&pane.id);
+        self.pane_titles.insert(pane.id, base.clone());
+        rename_terminal_pane(pane.id, base);
+    }
+
+    fn accept_pending_manual_renames(&mut self) {
+        let pane_ids: Vec<u32> = self.pending_manual_renames.drain().collect();
+        for pane_id in pane_ids {
+            if let Some(title) = self.pane_titles.get(&pane_id).cloned() {
+                let base = pane_names::strip_status_prefix(&title);
+                if base.trim().is_empty() {
+                    self.pane_base_names.remove(&pane_id);
+                } else {
+                    self.pane_base_names.insert(pane_id, base);
+                }
+            }
+            self.sync_pane_name_for_session(pane_id);
+        }
     }
 
     fn request_sync(&self) {
