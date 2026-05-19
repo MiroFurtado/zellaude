@@ -1,17 +1,23 @@
 mod event_handler;
 mod installer;
+mod pane_names;
 mod render;
 mod state;
 mod tab_pane_map;
 
-use state::{unix_now, unix_now_ms, HookPayload, MenuAction, SessionInfo, Settings, State, ViewMode};
+use pane_names::{
+    compose as compose_pane_name, format_elapsed as format_pane_elapsed, PaneActivity,
+};
+use state::{
+    unix_now, unix_now_ms, Activity, HookPayload, MenuAction, SessionInfo, Settings, State,
+    ViewMode,
+};
 use std::collections::BTreeMap;
 use zellij_tile::prelude::*;
 
 const DONE_TIMEOUT: u64 = 30;
 const TIMER_INTERVAL: f64 = 1.0;
 const FLASH_TICK: f64 = 0.25;
-const PANE_ELAPSED_THRESHOLD: u64 = 60;
 
 register_plugin!(State);
 
@@ -667,8 +673,11 @@ impl State {
         let Some(session) = self.sessions.get(&pane_id) else {
             return;
         };
-        let icon = activity_icon(session);
-        let base = strip_elapsed_suffix(
+        let elapsed = format_pane_elapsed(
+            unix_now().saturating_sub(session.last_event_ts),
+            self.settings.elapsed_time,
+        );
+        let base = pane_names::strip_elapsed_suffix(
             self
                 .pane_base_names
                 .get(&pane_id)
@@ -679,18 +688,7 @@ impl State {
         if self.pane_base_names.get(&pane_id) != Some(&base) {
             self.pane_base_names.insert(pane_id, base.clone());
         }
-        let base = base.trim();
-        let name = if base.is_empty() {
-            match format_pane_elapsed(session, self.settings.elapsed_time) {
-                Some(elapsed) => format!("{icon} ({elapsed})"),
-                None => icon.to_string(),
-            }
-        } else {
-            match format_pane_elapsed(session, self.settings.elapsed_time) {
-                Some(elapsed) => format!("{icon} {base} ({elapsed})"),
-                None => format!("{icon} {base}"),
-            }
-        };
+        let name = compose_pane_name(pane_activity(&session.activity), &base, elapsed.as_deref());
         if self.applied_pane_names.get(&pane_id) == Some(&name) {
             return;
         }
@@ -707,111 +705,34 @@ impl State {
     }
 
     fn maybe_update_pane_base_name(&mut self, pane_id: u32, current_title: &str) {
-        let candidate = strip_zellaude_status_prefix(current_title);
-        let has_existing_base = self
+        let existing_base = self
             .pane_base_names
             .get(&pane_id)
-            .map(|name| !name.trim().is_empty())
-            .unwrap_or(false);
-
-        if current_title_starts_with_zellaude_status(current_title)
-            && (!has_existing_base || !candidate.trim().is_empty())
+            .map(String::as_str);
+        let last_applied = self
+            .applied_pane_names
+            .get(&pane_id)
+            .map(String::as_str);
+        if let Some(candidate) =
+            pane_names::reconcile_base_name(existing_base, Some(current_title), last_applied)
         {
             self.pane_base_names.insert(pane_id, candidate);
-        } else if !has_existing_base && !candidate.trim().is_empty() {
-            self.pane_base_names.insert(pane_id, candidate);
         }
     }
 }
 
-fn activity_icon(session: &SessionInfo) -> &'static str {
-    match &session.activity {
-        state::Activity::Init => "◆",
-        state::Activity::Thinking => "●",
-        state::Activity::Tool(_) => "⚡",
-        state::Activity::Prompting => "▶",
-        state::Activity::Waiting => "⚠",
-        state::Activity::Notification => "◇",
-        state::Activity::Done | state::Activity::AgentDone => "✓",
-        state::Activity::Idle => "○",
+fn pane_activity(activity: &Activity) -> PaneActivity {
+    match activity {
+        Activity::Init => PaneActivity::Init,
+        Activity::Thinking => PaneActivity::Thinking,
+        Activity::Tool(_) => PaneActivity::Tool,
+        Activity::Prompting => PaneActivity::Prompting,
+        Activity::Waiting => PaneActivity::Waiting,
+        Activity::Notification => PaneActivity::Notification,
+        Activity::Done => PaneActivity::Done,
+        Activity::AgentDone => PaneActivity::AgentDone,
+        Activity::Idle => PaneActivity::Idle,
     }
-}
-
-fn strip_zellaude_status_prefix(name: &str) -> String {
-    let trimmed = name.trim();
-    let Some(icon) = trimmed.chars().next() else {
-        return String::new();
-    };
-    if !is_zellaude_status_icon(icon) {
-        return trimmed.to_string();
-    }
-    let rest = trimmed[icon.len_utf8()..].trim_start();
-    let rest = strip_elapsed_suffix(rest);
-    if rest.is_empty() || starts_with_agent_label(&rest) {
-        String::new()
-    } else {
-        rest
-    }
-}
-
-fn is_zellaude_status_icon(c: char) -> bool {
-    matches!(c, '◆' | '●' | '⚡' | '▶' | '⚠' | '◇' | '✓' | '○')
-}
-
-fn current_title_starts_with_zellaude_status(name: &str) -> bool {
-    name.trim()
-        .chars()
-        .next()
-        .map(is_zellaude_status_icon)
-        .unwrap_or(false)
-}
-
-fn starts_with_agent_label(s: &str) -> bool {
-    ["Claude", "Codex", "Cursor"]
-        .iter()
-        .any(|agent| s == *agent || s.starts_with(&format!("{agent} ")))
-}
-
-fn format_pane_elapsed(session: &SessionInfo, enabled: bool) -> Option<String> {
-    if !enabled {
-        return None;
-    }
-    let elapsed = unix_now().saturating_sub(session.last_event_ts);
-    if elapsed < PANE_ELAPSED_THRESHOLD {
-        None
-    } else if elapsed < 3600 {
-        Some(format!("{}m", elapsed / 60))
-    } else {
-        Some(format!("{}h", elapsed / 3600))
-    }
-}
-
-fn strip_elapsed_suffix(s: &str) -> String {
-    let mut current = s.trim().to_string();
-    loop {
-        let trimmed = current.trim_end();
-        let candidate = trimmed.strip_suffix(')').unwrap_or(trimmed);
-        let Some(open_idx) = candidate.rfind('(') else {
-            return trimmed.to_string();
-        };
-        let elapsed = candidate[(open_idx + 1)..].trim();
-        if !is_elapsed_label(elapsed) {
-            return trimmed.to_string();
-        }
-        current = candidate[..open_idx].trim_end().to_string();
-    }
-}
-
-fn is_elapsed_label(s: &str) -> bool {
-    let Some(unit) = s.chars().last() else {
-        return false;
-    };
-    if !matches!(unit, 'm' | 'h') {
-        return false;
-    }
-    s[..s.len() - unit.len_utf8()]
-        .chars()
-        .all(|c| c.is_ascii_digit())
 }
 
 fn kdl_escape(s: &str) -> String {
