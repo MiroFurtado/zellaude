@@ -11,13 +11,34 @@ trap cleanup EXIT
 mkdir -p "$TMP_HOME/.claude" "$TMP_HOME/.cursor" "$TMP_HOME/.codex"
 printf '{}' > "$TMP_HOME/.claude/settings.json"
 printf '{"version":1}' > "$TMP_HOME/.cursor/hooks.json"
-: > "$TMP_HOME/.codex/hooks.json"
+cat > "$TMP_HOME/.codex/hooks.json" <<'JSON'
+{
+  "hooks": {
+    "SessionStart": [
+      {"hooks": [{"type": "command", "command": "/old/path/zellaude-hook.sh codex", "timeout": 5}]},
+      {"hooks": [{"type": "command", "command": "/old/path/zellaude-hook.sh", "timeout": 5}]}
+    ]
+  }
+}
+JSON
 
 HOME="$TMP_HOME" "$ROOT/scripts/install-hooks.sh" >/tmp/zellaude-install-hooks-test.log
+HOME="$TMP_HOME" "$ROOT/scripts/install-hooks.sh" >/tmp/zellaude-install-hooks-test.log
+
+for _ in 1 2 3 4 5; do
+  HOME="$TMP_HOME" "$ROOT/scripts/install-hooks.sh" >/tmp/zellaude-install-hooks-test.log &
+done
+wait
 
 jq -e '
   .hooks.SessionStart[0].hooks[0].command
   | test("zellaude-hook\\.sh codex$")
+' "$TMP_HOME/.codex/hooks.json" >/dev/null
+
+jq -e '
+  .hooks
+  | to_entries
+  | all(.value | length == 1)
 ' "$TMP_HOME/.codex/hooks.json" >/dev/null
 
 jq -e '

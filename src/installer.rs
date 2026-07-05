@@ -21,6 +21,12 @@ SETTINGS="$HOME/.claude/settings.json"
 CURSOR_HOOKS="$HOME/.cursor/hooks.json"
 CODEX_HOOKS="$HOME/.codex/hooks.json"
 
+LOCK_FILE="${TMPDIR:-/tmp}/zellaude-install-hooks.lock"
+if command -v flock >/dev/null 2>&1; then
+  exec 9>"$LOCK_FILE"
+  flock 9
+fi
+
 # Write hook script
 mkdir -p "$(dirname "$HOOK_PATH")"
 cat > "$HOOK_PATH" << 'ZELLAUDE_HOOK_EOF'
@@ -42,14 +48,14 @@ fi
 
 cp "$SETTINGS" "$SETTINGS.bak"
 
-# Remove ALL existing zellaude hook entries (any path ending in zellaude-hook.sh)
+# Remove ALL existing zellaude hook entries.
 tmp=$(mktemp)
 jq '
   if .hooks and (.hooks | type == "object") then
     .hooks |= with_entries(
       .value |= [
         .[] | . as $group |
-        ($group.hooks // []) | map(select((.command // "") | test("zellaude-hook\\.sh(\\s+claude)?\\s*$") | not)) |
+        ($group.hooks // []) | map(select((.command // "") | test("(^|/)zellaude-hook\\.sh(\\s+[^;&|]*)?\\s*$") | not)) |
         . as $filtered |
         if length > 0 then ($group | .hooks = $filtered) else empty end
       ]
@@ -80,7 +86,7 @@ tmp=$(mktemp)
 jq '
   if .hooks and (.hooks | type == "object") then
     .hooks |= with_entries(
-      .value |= map(select((.command // "") | endswith("zellaude-hook.sh") | not))
+      .value |= map(select((.command // "") | test("(^|/)zellaude-hook\\.sh(\\s+[^;&|]*)?\\s*$") | not))
     ) | .hooks |= with_entries(select(.value | length > 0)) |
     if .hooks == {} then del(.hooks) else . end
   else . end
@@ -112,7 +118,7 @@ if [ -d "$HOME/.codex" ]; then
       .hooks |= with_entries(
         .value |= [
           .[] | . as $group |
-          ($group.hooks // []) | map(select((.command // "") | test("zellaude-hook\\.sh\\s+codex\\s*$") | not)) |
+          ($group.hooks // []) | map(select((.command // "") | test("(^|/)zellaude-hook\\.sh(\\s+[^;&|]*)?\\s*$") | not)) |
           . as $filtered |
           if length > 0 then ($group | .hooks = $filtered) else empty end
         ]

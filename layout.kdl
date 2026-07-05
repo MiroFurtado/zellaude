@@ -1,4 +1,6 @@
-// Zellaude example layout — plugin bar appears in every tab
+// Zellaude example layout — plugin bar appears in every tab.
+// If ~/.config/zellij/plugins/arete-focus.wasm is installed, the bottom
+// one-row pane shows active Arete focus sessions.
 // Usage: zellij --layout layout.kdl
 //
 // Set size=2 to enable double-decker mode: tabs that don't fit on the first
@@ -10,5 +12,18 @@ layout {
             plugin location="file:~/.config/zellij/plugins/zellaude.wasm"
         }
         children
+        pane size=1 borderless=true {
+            plugin location="file:~/.config/zellij/plugins/arete-focus.wasm"
+        }
+    }
+
+    new_tab_template {
+        pane size=1 borderless=true {
+            plugin location="file:~/.config/zellij/plugins/zellaude.wasm"
+        }
+        pane
+        pane size=1 borderless=true {
+            plugin location="file:~/.config/zellij/plugins/arete-focus.wasm"
+        }
     }
 }

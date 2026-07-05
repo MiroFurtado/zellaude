@@ -9,6 +9,12 @@ CURSOR_HOOKS="$HOME/.cursor/hooks.json"
 CODEX_HOOKS="$HOME/.codex/hooks.json"
 HOOK_SCRIPT="$(cd "$(dirname "$0")" && pwd)/zellaude-hook.sh"
 
+LOCK_FILE="${TMPDIR:-/tmp}/zellaude-install-hooks.lock"
+if command -v flock >/dev/null 2>&1; then
+  exec 9>"$LOCK_FILE"
+  flock 9
+fi
+
 if ! command -v jq &>/dev/null; then
   echo "Error: jq is required. Install with: brew install jq" >&2
   exit 1
@@ -66,15 +72,14 @@ uninstall_claude() {
   backup "$CLAUDE_SETTINGS"
   local tmp
   tmp=$(mktemp)
-  # Strip any entry whose command ends with zellaude-hook.sh, so re-runs from
-  # different install paths (e.g. WASM auto-install vs ./install.sh) don't leave
-  # duplicates behind.
+  # Strip any zellaude hook entry, so re-runs from different install paths
+  # (e.g. WASM auto-install vs ./install.sh) don't leave duplicates behind.
   jq '
     if .hooks and (.hooks | type == "object") then
       .hooks |= with_entries(
         .value |= [
           .[] | . as $group |
-          ($group.hooks // []) | map(select((.command // "") | test("zellaude-hook\\.sh(\\s+claude)?\\s*$") | not)) |
+          ($group.hooks // []) | map(select((.command // "") | test("(^|/)zellaude-hook\\.sh(\\s+[^;&|]*)?\\s*$") | not)) |
           . as $filtered |
           if length > 0 then ($group | .hooks = $filtered) else empty end
         ]
@@ -95,7 +100,7 @@ uninstall_cursor() {
   jq '
     if .hooks and (.hooks | type == "object") then
       .hooks |= with_entries(
-        .value |= map(select((.command // "") | endswith("zellaude-hook.sh") | not))
+        .value |= map(select((.command // "") | test("(^|/)zellaude-hook\\.sh(\\s+[^;&|]*)?\\s*$") | not))
       ) | .hooks |= with_entries(select(.value | length > 0)) |
       if .hooks == {} then del(.hooks) else . end
     else . end
@@ -115,7 +120,7 @@ uninstall_codex() {
       .hooks |= with_entries(
         .value |= [
           .[] | . as $group |
-          ($group.hooks // []) | map(select((.command // "") | test("zellaude-hook\\.sh\\s+codex\\s*$") | not)) |
+          ($group.hooks // []) | map(select((.command // "") | test("(^|/)zellaude-hook\\.sh(\\s+[^;&|]*)?\\s*$") | not)) |
           . as $filtered |
           if length > 0 then ($group | .hooks = $filtered) else empty end
         ]
