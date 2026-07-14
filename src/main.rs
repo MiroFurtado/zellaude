@@ -16,6 +16,7 @@ use std::collections::BTreeMap;
 use zellij_tile::prelude::*;
 
 const DONE_TIMEOUT: u64 = 30;
+const COPILOT_THINKING_TIMEOUT: u64 = 120;
 const TIMER_INTERVAL: f64 = 1.0;
 const FLASH_TICK: f64 = 0.25;
 
@@ -228,7 +229,8 @@ impl ZellijPlugin for State {
                 if !self.config_loaded {
                     self.load_config();
                 }
-                // Auto-install hook script and register Claude Code hooks
+                // Auto-install hook script and register agent (Claude Code,
+                // cursor-agent, Codex, Copilot) hooks
                 if !self.hooks_installed {
                     installer::run_install();
                 }
@@ -385,15 +387,13 @@ impl State {
         let mut changed = false;
         let mut renamed_panes = Vec::new();
         for session in self.sessions.values_mut() {
-            match session.activity {
-                state::Activity::Done | state::Activity::AgentDone => {
-                    if now.saturating_sub(session.last_event_ts) >= DONE_TIMEOUT {
-                        session.activity = state::Activity::Idle;
-                        renamed_panes.push(session.pane_id);
-                        changed = true;
-                    }
-                }
-                _ => {}
+            let elapsed = now.saturating_sub(session.last_event_ts);
+            if let Some(activity) =
+                stale_activity(&session.activity, session.agent.as_deref(), elapsed)
+            {
+                session.activity = activity;
+                renamed_panes.push(session.pane_id);
+                changed = true;
             }
         }
         if self.input_mode != InputMode::RenamePane {
@@ -672,6 +672,7 @@ impl State {
                     let bin = match s.agent.as_deref() {
                         Some("cursor") => "cursor-agent",
                         Some("codex") => "codex",
+                        Some("copilot") => "copilot",
                         _ => "claude",
                     };
                     // Wrap in `bash -ic` so user shell aliases (e.g. claude
@@ -798,4 +799,60 @@ fn sanitize_session_name(name: &str) -> String {
     name.chars()
         .filter(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
         .collect()
+}
+
+fn stale_activity(activity: &Activity, agent: Option<&str>, elapsed: u64) -> Option<Activity> {
+    match activity {
+        Activity::Done | Activity::AgentDone if elapsed >= DONE_TIMEOUT => Some(Activity::Idle),
+        // Safety net for a missed or failed agentStop hook.
+        Activity::Thinking if agent == Some("copilot") && elapsed >= COPILOT_THINKING_TIMEOUT => {
+            Some(Activity::Prompting)
+        }
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stale_copilot_thinking_becomes_ready() {
+        assert_eq!(
+            stale_activity(
+                &Activity::Thinking,
+                Some("copilot"),
+                COPILOT_THINKING_TIMEOUT
+            ),
+            Some(Activity::Prompting)
+        );
+        assert_eq!(
+            stale_activity(
+                &Activity::Thinking,
+                Some("copilot"),
+                COPILOT_THINKING_TIMEOUT - 1
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn active_tools_and_other_agents_do_not_time_out() {
+        assert_eq!(
+            stale_activity(
+                &Activity::Tool("bash".into()),
+                Some("copilot"),
+                COPILOT_THINKING_TIMEOUT
+            ),
+            None
+        );
+        assert_eq!(
+            stale_activity(
+                &Activity::Thinking,
+                Some("claude"),
+                COPILOT_THINKING_TIMEOUT
+            ),
+            None
+        );
+    }
 }

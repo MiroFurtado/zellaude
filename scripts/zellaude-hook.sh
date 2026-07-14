@@ -1,18 +1,60 @@
 #!/usr/bin/env bash
-# zellaude-hook.sh — Claude Code / cursor-agent / Codex CLI hook → zellij pipe bridge
-# Forwards hook events to the zellaude Zellij plugin via pipe.
+# zellaude-hook.sh — Claude Code / cursor-agent / Codex CLI / GitHub Copilot CLI
+# hook → zellij pipe bridge. Forwards hook events to the zellaude Zellij plugin.
 #
 # Usage in ~/.claude/settings.json hooks:
 #   "command": "/path/to/zellaude-hook.sh claude"
 # Usage in ~/.codex/hooks.json hooks:
 #   "command": "/path/to/zellaude-hook.sh codex"
+# Usage in ~/.copilot/hooks/*.json hooks (Copilot omits the event name from the
+# stdin payload, so it is passed as a second argument matching the config key):
+#   "bash": "/path/to/zellaude-hook.sh copilot preToolUse"
 
-# Agent type (claude|cursor|codex); empty preserves legacy payload detection.
+# Agent type (claude|cursor|codex|copilot); empty preserves legacy detection.
 AGENT_ARG="${1:-}"
+# Event name, supplied by callers whose payload omits it (Copilot). Empty
+# otherwise; the event is then read from the stdin JSON.
+EVENT_ARG="${2:-}"
 
-# Exit silently if not running inside Zellij
-[ -z "$ZELLIJ_SESSION_NAME" ] && exit 0
-[ -z "$ZELLIJ_PANE_ID" ] && exit 0
+LOG_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/zellaude"
+LOG_FILE="$LOG_DIR/hooks.log"
+LOG_MAX_BYTES=$((1024 * 1024))
+
+log_event() {
+  mkdir -p -m 700 "$LOG_DIR" 2>/dev/null || return
+  if [ -f "$LOG_FILE" ] && [ "$(wc -c < "$LOG_FILE" 2>/dev/null)" -ge "$LOG_MAX_BYTES" ]; then
+    mv -f "$LOG_FILE" "$LOG_FILE.1" 2>/dev/null || return
+  fi
+  printf '%s agent=%s event=%s session=%s pane=%s tool=%s status=%s\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    "${AGENT:-${AGENT_ARG:-unknown}}" \
+    "${HOOK_EVENT:-${EVENT_ARG:-unknown}}" \
+    "${ZELLIJ_SESSION_NAME:-missing}" \
+    "${ZELLIJ_PANE_ID:-missing}" \
+    "${TOOL_NAME:--}" \
+    "$1" >> "$LOG_FILE" 2>/dev/null || true
+  chmod 600 "$LOG_FILE" 2>/dev/null || true
+}
+
+run_pipe() {
+  "$@" >/dev/null 2>&1 &
+  local pipe_pid=$!
+  (
+    sleep 2
+    kill "$pipe_pid" 2>/dev/null || true
+  ) &
+  local watchdog_pid=$!
+  wait "$pipe_pid"
+  local status=$?
+  kill "$watchdog_pid" 2>/dev/null || true
+  wait "$watchdog_pid" 2>/dev/null || true
+  return "$status"
+}
+
+if [ -z "$ZELLIJ_SESSION_NAME" ] || [ -z "$ZELLIJ_PANE_ID" ]; then
+  log_event "ignored_missing_zellij_env"
+  exit 0
+fi
 
 # Capture send-time immediately so the plugin can order events
 # that race through parallel hook subprocesses.
@@ -21,11 +63,15 @@ TS_MS=$(jq -nc 'now * 1000 | floor')
 # Read hook JSON from stdin
 INPUT=$(cat)
 
-# Extract fields with jq (required dependency)
+# Extract fields with jq (required dependency). Field names differ per agent:
+#   Claude/Codex use snake_case (session_id, tool_name); cursor-agent uses
+#   conversation_id; Copilot command hooks use camelCase (sessionId, toolName)
+#   and omit the event name entirely. Fall back across all spellings.
 HOOK_EVENT=$(echo "$INPUT" | jq -r '.hook_event_name // empty')
-SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // .conversation_id // empty')
-TOOL_NAME=$(echo "$INPUT" | jq -r '.tool_name // empty')
-CWD=$(echo "$INPUT" | jq -r '.cwd // empty')
+[ -z "$HOOK_EVENT" ] && HOOK_EVENT="$EVENT_ARG"
+SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // .conversation_id // .sessionId // empty')
+TOOL_NAME=$(echo "$INPUT" | jq -r '.tool_name // .toolName // empty')
+CWD=$(echo "$INPUT" | jq -r '.cwd // .workingDirectory // empty')
 
 # Identify which agent fired this hook so the plugin can later snapshot the
 # right resume command. cursor-agent's payload always includes cursor_version.
@@ -37,8 +83,8 @@ fi
 
 [ -z "$HOOK_EVENT" ] && exit 0
 
-# Normalize cursor-agent events (camelCase) to the internal PascalCase names
-# the plugin already understands. Claude events pass through unchanged.
+# Normalize cursor-agent / Copilot events (camelCase) to the internal PascalCase
+# names the plugin already understands. Claude events pass through unchanged.
 case "$HOOK_EVENT" in
   sessionStart)        HOOK_EVENT="SessionStart" ;;
   sessionEnd)          HOOK_EVENT="SessionEnd" ;;
@@ -46,9 +92,16 @@ case "$HOOK_EVENT" in
   postToolUse)         HOOK_EVENT="PostToolUse" ;;
   postToolUseFailure)  HOOK_EVENT="PostToolUseFailure" ;;
   beforeSubmitPrompt)  HOOK_EVENT="UserPromptSubmit" ;;
+  userPromptSubmit)    HOOK_EVENT="UserPromptSubmit" ;;
+  userPromptSubmitted) HOOK_EVENT="UserPromptSubmit" ;;
+  permissionRequest)   HOOK_EVENT="PermissionRequest" ;;
+  notification)        HOOK_EVENT="Notification" ;;
   stop)                HOOK_EVENT="Stop" ;;
+  agentStop)           HOOK_EVENT="Stop" ;;
   subagentStop)        HOOK_EVENT="SubagentStop" ;;
 esac
+
+log_event "received"
 
 # Build compact JSON payload
 PAYLOAD=$(jq -nc \
@@ -126,9 +179,10 @@ if [ "$HOOK_EVENT" = "PermissionRequest" ]; then
     TOOL_SUFFIX=""
     [ -n "$TOOL_NAME" ] && TOOL_SUFFIX=" — $TOOL_NAME"
     case "$AGENT" in
-      codex)  TITLE="⚠ Codex CLI" ;;
-      cursor) TITLE="⚠ Cursor Agent" ;;
-      *)      TITLE="⚠ Claude Code" ;;
+      codex)   TITLE="⚠ Codex CLI" ;;
+      cursor)  TITLE="⚠ Cursor Agent" ;;
+      copilot) TITLE="⚠ GitHub Copilot" ;;
+      *)       TITLE="⚠ Claude Code" ;;
     esac
     MESSAGE="Permission requested${TOOL_SUFFIX}"
 
@@ -170,10 +224,19 @@ fi
 # as the hook's JSON response and would error on non-JSON output. Try the
 # PATH zellij first, then /usr/bin/zellij for sessions still running an older
 # distro-packaged server after a user-local zellij upgrade.
-if command -v zellij >/dev/null 2>&1; then
-  zellij pipe --name "zellaude" -- "$PAYLOAD" >/dev/null 2>&1 || \
-    [ ! -x /usr/bin/zellij ] || /usr/bin/zellij pipe --name "zellaude" -- "$PAYLOAD" >/dev/null 2>&1 || true
-elif [ -x /usr/bin/zellij ]; then
-  /usr/bin/zellij pipe --name "zellaude" -- "$PAYLOAD" >/dev/null 2>&1 || true
+DELIVERED=false
+ZELLIJ_BIN=$(command -v zellij 2>/dev/null || true)
+if [ -n "$ZELLIJ_BIN" ] &&
+  run_pipe "$ZELLIJ_BIN" pipe --name "zellaude" -- "$PAYLOAD"; then
+  DELIVERED=true
+elif [ -x /usr/bin/zellij ] && [ "$ZELLIJ_BIN" != "/usr/bin/zellij" ] &&
+  run_pipe /usr/bin/zellij pipe --name "zellaude" -- "$PAYLOAD"; then
+  DELIVERED=true
+fi
+
+if [ "$DELIVERED" = true ]; then
+  log_event "delivered"
+else
+  log_event "delivery_failed"
 fi
 exit 0

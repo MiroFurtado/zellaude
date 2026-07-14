@@ -1,6 +1,6 @@
 # Zellaude
 
-A Zellij status bar plugin that replaces the default tab bar with Claude Code, cursor-agent, and Codex CLI activity awareness.
+A Zellij status bar plugin that replaces the default tab bar with Claude Code, cursor-agent, Codex CLI, and GitHub Copilot CLI activity awareness.
 
 ![Zellaude status bar example](assets/bar-example.svg)
 
@@ -8,7 +8,7 @@ A Zellij status bar plugin that replaces the default tab bar with Claude Code, c
 
 - **Full tab bar** — shows all Zellij tabs (not just Claude sessions), replacing the native tab bar
 - **Session & mode display** — shows the Zellij session name and current input mode (NORMAL, LOCKED, PANE, etc.) with color-coded indicators
-- **Live activity indicators** — see what every Claude Code, cursor-agent, or Codex CLI session is doing at a glance; other tabs shown dimly
+- **Live activity indicators** — see what every Claude Code, cursor-agent, Codex CLI, or GitHub Copilot CLI session is doing at a glance; other tabs shown dimly
 - **Clickable tabs** — click any tab to switch to it
 - **Smart pane focus** — clicking a waiting (⚠) session focuses the exact pane so you can respond to the permission prompt immediately
 - **Permission flash** — sessions pulse bright yellow for 2 seconds when a permission request arrives
@@ -63,7 +63,7 @@ default_tab_template {
 }
 ```
 
-On first load, the plugin automatically installs the hook script and registers it with Claude Code, cursor-agent, and Codex CLI when their config directories exist. No cloning, no install scripts.
+On first load, the plugin automatically installs the hook script and registers it with Claude Code, cursor-agent, Codex CLI, and GitHub Copilot CLI when their config directories exist. No cloning, no install scripts.
 
 ### Build from source
 
@@ -114,16 +114,26 @@ Without it, notifications still appear via osascript but clicking them won't foc
 
 Two components:
 
-1. **WASM plugin** — runs inside Zellij, receives events, maintains state in memory, renders the status bar, sends desktop notifications. On first load, writes the hook script to `~/.config/zellij/plugins/zellaude-hook.sh` and registers it with Claude Code, cursor-agent, and Codex CLI when available.
+1. **WASM plugin** — runs inside Zellij, receives events, maintains state in memory, renders the status bar, sends desktop notifications. On first load, writes the hook script to `~/.config/zellij/plugins/zellaude-hook.sh` and registers it with Claude Code, cursor-agent, Codex CLI, and GitHub Copilot CLI when available.
 2. **Hook script** — a thin bash bridge that forwards agent hook events to the plugin via `zellij pipe`
 
 ```
-Claude Code / cursor-agent / Codex CLI hook → zellaude-hook.sh → zellij pipe → plugin → render
+Claude Code / cursor-agent / Codex CLI / Copilot CLI hook → zellaude-hook.sh → zellij pipe → plugin → render
 ```
 
 The hook script and registration are version-tagged and updated automatically when the plugin version changes.
 
-All state lives in WASM memory. No temp files, no race conditions. Multiple plugin instances (one per tab) sync state automatically via inter-plugin messaging. Sessions are cleaned up automatically when tabs are closed.
+Hook delivery metadata is written to `~/.local/state/zellaude/hooks.log` (or
+`$XDG_STATE_HOME/zellaude/hooks.log`) for diagnostics. The bounded log rotates
+at 1 MiB and records event names and delivery status, but never prompt or tool
+input.
+
+Copilot's `agentStop` event transitions a completed response immediately from
+**Thinking** to **Waiting for user prompt**. As a delivery-failure fallback,
+Copilot sessions with no hook activity for two minutes make the same transition.
+Running tools and permission requests never use this fallback.
+
+All activity state lives in WASM memory. Multiple plugin instances (one per tab) sync state automatically via inter-plugin messaging. Sessions are cleaned up automatically when tabs are closed.
 
 ## License
 

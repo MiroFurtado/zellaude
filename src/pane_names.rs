@@ -129,7 +129,7 @@ fn is_status_icon(c: char) -> bool {
 }
 
 fn starts_with_agent_label(s: &str) -> bool {
-    ["Claude", "Codex", "Cursor"]
+    ["Claude", "Codex", "Cursor", "Copilot"]
         .iter()
         .any(|agent| s == *agent || s.starts_with(&format!("{agent} ")))
 }

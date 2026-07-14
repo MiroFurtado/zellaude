@@ -51,7 +51,8 @@ pub fn handle_hook_event(state: &mut State, payload: HookPayload) {
             }
             return;
         }
-        "Stop" => Activity::Done,
+        // The agent finished its response and is ready for the next prompt.
+        "Stop" => Activity::Prompting,
         "SubagentStop" => Activity::AgentDone,
         _ => Activity::Idle,
     };

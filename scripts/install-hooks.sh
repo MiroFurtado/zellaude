@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# install-hooks.sh — Register zellaude hooks with Claude Code, cursor-agent, and Codex CLI
+# install-hooks.sh — Register zellaude hooks with Claude Code, cursor-agent,
+# Codex CLI, and GitHub Copilot CLI
 #
 # Usage: ./scripts/install-hooks.sh [--uninstall]
 set -euo pipefail
@@ -7,6 +8,7 @@ set -euo pipefail
 CLAUDE_SETTINGS="$HOME/.claude/settings.json"
 CURSOR_HOOKS="$HOME/.cursor/hooks.json"
 CODEX_HOOKS="$HOME/.codex/hooks.json"
+COPILOT_HOOKS="$HOME/.copilot/hooks/zellaude.json"
 HOOK_SCRIPT="$(cd "$(dirname "$0")" && pwd)/zellaude-hook.sh"
 
 LOCK_FILE="${TMPDIR:-/tmp}/zellaude-install-hooks.lock"
@@ -28,6 +30,9 @@ fi
 CLAUDE_EVENTS='["PreToolUse","PostToolUse","PostToolUseFailure","UserPromptSubmit","PermissionRequest","Notification","Stop","SubagentStop","SessionStart","SessionEnd"]'
 CURSOR_EVENTS='["sessionStart","sessionEnd","preToolUse","postToolUse","postToolUseFailure","beforeSubmitPrompt","stop","subagentStop"]'
 CODEX_EVENTS='["SessionStart","PreToolUse","PostToolUse","UserPromptSubmit","PermissionRequest","Stop"]'
+# Copilot omits the event name from the hook payload, so it travels as the
+# second argument (matching the config key); the hook script normalizes it.
+COPILOT_EVENTS='["sessionStart","sessionEnd","preToolUse","postToolUse","postToolUseFailure","userPromptSubmitted","notification","permissionRequest","agentStop"]'
 
 CLAUDE_ENTRY=$(jq -nc --arg cmd "$HOOK_SCRIPT claude" '[{
   "hooks": [{
@@ -132,6 +137,13 @@ uninstall_codex() {
   echo "Uninstalled zellaude hooks from $CODEX_HOOKS"
 }
 
+# Copilot hooks live in a zellaude-owned file, so uninstall just removes it.
+uninstall_copilot() {
+  [ -f "$COPILOT_HOOKS" ] || return 0
+  rm -f "$COPILOT_HOOKS"
+  echo "Uninstalled zellaude hooks from $COPILOT_HOOKS"
+}
+
 install_claude() {
   if [ ! -f "$CLAUDE_SETTINGS" ]; then
     mkdir -p "$(dirname "$CLAUDE_SETTINGS")"
@@ -194,16 +206,37 @@ install_codex() {
   echo "Installed zellaude hooks into $CODEX_HOOKS"
 }
 
+install_copilot() {
+  if [ ! -d "$HOME/.copilot" ]; then
+    echo "Skipping Copilot hooks: $HOME/.copilot does not exist"
+    return 0
+  fi
+  # Copilot loads every *.json under ~/.copilot/hooks/, so zellaude owns a
+  # dedicated file — no merge needed, just overwrite.
+  mkdir -p "$(dirname "$COPILOT_HOOKS")"
+  local tmp
+  tmp=$(mktemp)
+  jq -nc --arg hook "$HOOK_SCRIPT" --argjson events "$COPILOT_EVENTS" '
+    {version: 1,
+     hooks: (reduce ($events[]) as $e ({};
+       .[$e] = [{type: "command", bash: ($hook + " copilot " + $e), timeoutSec: 5}]))}
+  ' > "$tmp"
+  mv "$tmp" "$COPILOT_HOOKS"
+  echo "Installed zellaude hooks into $COPILOT_HOOKS"
+}
+
 case "${1:-}" in
   --uninstall)
     uninstall_claude
     uninstall_cursor
     uninstall_codex
+    uninstall_copilot
     ;;
   *)
     install_claude
     install_cursor
     install_codex
+    install_copilot
     echo "Hook script: $HOOK_SCRIPT"
     ;;
 esac

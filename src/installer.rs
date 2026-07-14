@@ -136,6 +136,25 @@ if [ -d "$HOME/.codex" ]; then
   ' "$CODEX_HOOKS" > "$tmp" && mv "$tmp" "$CODEX_HOOKS"
 fi
 
+# --- GitHub Copilot CLI: ~/.copilot/hooks/zellaude.json ---
+# Copilot loads every *.json under ~/.copilot/hooks/, so zellaude owns a
+# dedicated file (no merge dance). Schema: { version, hooks: { <event>: [
+# {type:"command", bash:"<cmd>", timeoutSec} ] } }. Copilot's command-hook
+# payload omits the event name, so it is passed as the hook's second argument
+# (matching the config key); the hook script normalizes it to PascalCase.
+# Only register when ~/.copilot already exists.
+if [ -d "$HOME/.copilot" ]; then
+  COPILOT_HOOKS_DIR="$HOME/.copilot/hooks"
+  mkdir -p "$COPILOT_HOOKS_DIR"
+  COPILOT_EVENTS='["sessionStart","sessionEnd","preToolUse","postToolUse","postToolUseFailure","userPromptSubmitted","notification","permissionRequest","agentStop"]'
+  tmp=$(mktemp)
+  jq -nc --arg hook "$HOOK_PATH" --argjson events "$COPILOT_EVENTS" '
+    {version: 1,
+     hooks: (reduce ($events[]) as $e ({};
+       .[$e] = [{type: "command", bash: ($hook + " copilot " + $e), timeoutSec: 5}]))}
+  ' > "$tmp" && mv "$tmp" "$COPILOT_HOOKS_DIR/zellaude.json"
+fi
+
 echo "installed"
 "##;
 
