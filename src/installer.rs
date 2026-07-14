@@ -146,7 +146,7 @@ fi
 if [ -d "$HOME/.copilot" ]; then
   COPILOT_HOOKS_DIR="$HOME/.copilot/hooks"
   mkdir -p "$COPILOT_HOOKS_DIR"
-  COPILOT_EVENTS='["sessionStart","sessionEnd","preToolUse","postToolUse","postToolUseFailure","userPromptSubmitted","notification","permissionRequest","agentStop"]'
+  COPILOT_EVENTS='["sessionStart","sessionEnd","preToolUse","postToolUse","postToolUseFailure","userPromptSubmitted","notification","agentStop"]'
   tmp=$(mktemp)
   jq -nc --arg hook "$HOOK_PATH" --argjson events "$COPILOT_EVENTS" '
     {version: 1,

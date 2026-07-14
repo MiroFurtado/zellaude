@@ -50,9 +50,10 @@ jq -e '
 jq -e '
   .version == 1 and
   (.hooks.preToolUse[0].bash | test("zellaude-hook\\.sh copilot preToolUse$")) and
-  (.hooks.permissionRequest[0].bash | test("zellaude-hook\\.sh copilot permissionRequest$")) and
   (.hooks.userPromptSubmitted[0].bash | test("zellaude-hook\\.sh copilot userPromptSubmitted$")) and
   (.hooks.agentStop[0].bash | test("zellaude-hook\\.sh copilot agentStop$")) and
+  (.hooks | has("notification")) and
+  (.hooks | has("permissionRequest") | not) and
   (.hooks | has("userPromptSubmit") | not) and
   (.hooks | has("stop") | not) and
   (.hooks.preToolUse[0].type == "command")
@@ -80,6 +81,32 @@ grep -q 'agent=copilot event=PreToolUse session=test-zellij pane=42 tool=bash st
 grep -q 'status=delivered' "$TMP_HOME/state/zellaude/hooks.log"
 ! grep -q 'private prompt' "$TMP_HOME/state/zellaude/hooks.log"
 grep -q '"hook_event":"PreToolUse"' "$TMP_HOME/pipe.log"
+
+# Copilot's permissionRequest runs before auto-allow and must not show waiting.
+pipe_lines=$(wc -l < "$TMP_HOME/pipe.log")
+printf '%s\n' '{"sessionId":"test-session","toolName":"bash"}' |
+  HOME="$TMP_HOME" \
+  XDG_STATE_HOME="$TMP_HOME/state" \
+  PATH="$TMP_HOME/bin:$PATH" \
+  ZELLIJ_SESSION_NAME="test-zellij" \
+  ZELLIJ_PANE_ID="42" \
+  ZELLAUDE_TEST_PIPE_LOG="$TMP_HOME/pipe.log" \
+  "$ROOT/scripts/zellaude-hook.sh" copilot permissionRequest
+[ "$(wc -l < "$TMP_HOME/pipe.log")" -eq "$pipe_lines" ]
+grep -q 'event=permissionRequest .*status=ignored_pre_permission_service' \
+  "$TMP_HOME/state/zellaude/hooks.log"
+
+# A displayed permission prompt arrives as a notification and does show waiting.
+printf '%s\n' \
+  '{"sessionId":"test-session","notificationType":"permission_prompt","title":"Permission needed"}' |
+  HOME="$TMP_HOME" \
+  XDG_STATE_HOME="$TMP_HOME/state" \
+  PATH="$TMP_HOME/bin:$PATH" \
+  ZELLIJ_SESSION_NAME="test-zellij" \
+  ZELLIJ_PANE_ID="42" \
+  ZELLAUDE_TEST_PIPE_LOG="$TMP_HOME/pipe.log" \
+  "$ROOT/scripts/zellaude-hook.sh" copilot notification
+grep -q '"hook_event":"PermissionRequest"' "$TMP_HOME/pipe.log"
 
 SECONDS=0
 printf '%s\n' '{"sessionId":"test-session"}' |

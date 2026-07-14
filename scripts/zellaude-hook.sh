@@ -72,6 +72,7 @@ HOOK_EVENT=$(echo "$INPUT" | jq -r '.hook_event_name // empty')
 SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // .conversation_id // .sessionId // empty')
 TOOL_NAME=$(echo "$INPUT" | jq -r '.tool_name // .toolName // empty')
 CWD=$(echo "$INPUT" | jq -r '.cwd // .workingDirectory // empty')
+NOTIFICATION_TYPE=$(echo "$INPUT" | jq -r '.notification_type // .notificationType // empty')
 
 # Identify which agent fired this hook so the plugin can later snapshot the
 # right resume command. cursor-agent's payload always includes cursor_version.
@@ -94,8 +95,25 @@ case "$HOOK_EVENT" in
   beforeSubmitPrompt)  HOOK_EVENT="UserPromptSubmit" ;;
   userPromptSubmit)    HOOK_EVENT="UserPromptSubmit" ;;
   userPromptSubmitted) HOOK_EVENT="UserPromptSubmit" ;;
-  permissionRequest)   HOOK_EVENT="PermissionRequest" ;;
-  notification)        HOOK_EVENT="Notification" ;;
+  permissionRequest)
+    if [ "$AGENT" = "copilot" ]; then
+      # Copilot fires this before auto-allow/rules processing, not only when
+      # displaying a prompt. Real prompts arrive as notification events.
+      log_event "ignored_pre_permission_service"
+      exit 0
+    fi
+    HOOK_EVENT="PermissionRequest"
+    ;;
+  notification)
+    case "$AGENT:$NOTIFICATION_TYPE" in
+      copilot:permission_prompt|copilot:elicitation_dialog)
+        HOOK_EVENT="PermissionRequest"
+        ;;
+      *)
+        HOOK_EVENT="Notification"
+        ;;
+    esac
+    ;;
   stop)                HOOK_EVENT="Stop" ;;
   agentStop)           HOOK_EVENT="Stop" ;;
   subagentStop)        HOOK_EVENT="SubagentStop" ;;
@@ -128,7 +146,7 @@ PAYLOAD=$(jq -nc \
 
 # Permission request: bell + desktop notification
 if [ "$HOOK_EVENT" = "PermissionRequest" ]; then
-  printf '\a' > /dev/tty 2>/dev/null || true
+  printf '\a' 2>/dev/null > /dev/tty || true
 
   # Read notification setting (default: Always)
   SETTINGS_FILE="$HOME/.config/zellij/plugins/zellaude.json"

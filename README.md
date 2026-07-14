@@ -133,6 +133,11 @@ Copilot's `agentStop` event transitions a completed response immediately from
 Copilot sessions with no hook activity for two minutes make the same transition.
 Running tools and permission requests never use this fallback.
 
+Copilot's pre-rules `permissionRequest` event is deliberately not used as a
+waiting signal because it also fires for auto-approved tools. Zellaude marks a
+Copilot session as waiting only when the CLI emits a `permission_prompt` or
+`elicitation_dialog` notification that requires user input.
+
 All activity state lives in WASM memory. Multiple plugin instances (one per tab) sync state automatically via inter-plugin messaging. Sessions are cleaned up automatically when tabs are closed.
 
 ## License

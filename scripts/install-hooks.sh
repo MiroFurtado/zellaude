@@ -32,7 +32,7 @@ CURSOR_EVENTS='["sessionStart","sessionEnd","preToolUse","postToolUse","postTool
 CODEX_EVENTS='["SessionStart","PreToolUse","PostToolUse","UserPromptSubmit","PermissionRequest","Stop"]'
 # Copilot omits the event name from the hook payload, so it travels as the
 # second argument (matching the config key); the hook script normalizes it.
-COPILOT_EVENTS='["sessionStart","sessionEnd","preToolUse","postToolUse","postToolUseFailure","userPromptSubmitted","notification","permissionRequest","agentStop"]'
+COPILOT_EVENTS='["sessionStart","sessionEnd","preToolUse","postToolUse","postToolUseFailure","userPromptSubmitted","notification","agentStop"]'
 
 CLAUDE_ENTRY=$(jq -nc --arg cmd "$HOOK_SCRIPT claude" '[{
   "hooks": [{
