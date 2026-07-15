@@ -104,6 +104,26 @@ brew install terminal-notifier
 
 Without it, notifications still appear via osascript but clicking them won't focus the pane.
 
+### Optional: mirror activity to Arete
+
+Zellaude can send the same normalized, prompt-free activity payload to an
+authenticated Arete endpoint. Copy the example config to the private plugin
+configuration directory and fill in the endpoint and token:
+
+```bash
+mkdir -p ~/.config/zellij/plugins
+cp examples/zellaude-arete.json ~/.config/zellij/plugins/zellaude-arete.json
+chmod 600 ~/.config/zellij/plugins/zellaude-arete.json
+```
+
+The endpoint must be the full URL ending in
+`/api/agent-updates/zellaude`. The token must match Arete's
+`ZELLAUDE_INGEST_TOKEN`. You can instead set `ZELLAUDE_ARETE_ENDPOINT` and
+`ZELLAUDE_ARETE_TOKEN` in the environment; environment values take precedence.
+Forwarding is off when neither source is configured, happens in the background,
+and never changes the hook exit status. Delivery metadata is recorded in the
+normal bounded Zellaude hook log, but tokens and prompts are not logged.
+
 ## Uninstall
 
 ```bash
@@ -119,6 +139,7 @@ Two components:
 
 ```
 Claude Code / cursor-agent / Codex CLI / Copilot CLI hook → zellaude-hook.sh → zellij pipe → plugin → render
+                                                               └→ optional authenticated Arete endpoint
 ```
 
 The hook script and registration are version-tagged and updated automatically when the plugin version changes.

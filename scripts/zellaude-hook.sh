@@ -19,6 +19,7 @@ EVENT_ARG="${2:-}"
 LOG_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/zellaude"
 LOG_FILE="$LOG_DIR/hooks.log"
 LOG_MAX_BYTES=$((1024 * 1024))
+ARETE_CONFIG="${ZELLAUDE_ARETE_CONFIG:-$HOME/.config/zellij/plugins/zellaude-arete.json}"
 
 log_event() {
   mkdir -p -m 700 "$LOG_DIR" 2>/dev/null || return
@@ -47,7 +48,9 @@ run_pipe() {
   wait "$pipe_pid"
   local status=$?
   kill "$watchdog_pid" 2>/dev/null || true
-  wait "$watchdog_pid" 2>/dev/null || true
+  wait "$watchdog_pid" 2>/dev/null
+  local watchdog_status=$?
+  [ "$watchdog_status" -eq 0 ] && return 124
   return "$status"
 }
 
@@ -132,6 +135,7 @@ PAYLOAD=$(jq -nc \
   --arg term_program "${TERM_PROGRAM:-}" \
   --arg ts_ms "$TS_MS" \
   --arg agent "$AGENT" \
+  --arg host "${HOSTNAME:-$(hostname 2>/dev/null)}" \
   '{
     pane_id: ($pane_id | tonumber),
     session_id: $session_id,
@@ -141,8 +145,49 @@ PAYLOAD=$(jq -nc \
     zellij_session: $zellij_session,
     term_program: (if $term_program == "" then null else $term_program end),
     ts_ms: ($ts_ms | tonumber),
-    agent: $agent
+    agent: $agent,
+    host: (if $host == "" then null else $host end),
+    source: "zellaude"
   }')
+
+# Optionally mirror the normalized event to Arete. Configuration may come
+# from environment variables or a private JSON file; environment wins. This
+# runs in the background so a slow/unreachable endpoint never delays an agent.
+forward_to_arete() {
+  local endpoint="${ZELLAUDE_ARETE_ENDPOINT:-}"
+  local token="${ZELLAUDE_ARETE_TOKEN:-}"
+  if [ -f "$ARETE_CONFIG" ]; then
+    [ -n "$endpoint" ] || endpoint=$(jq -r '.endpoint // empty' "$ARETE_CONFIG" 2>/dev/null)
+    [ -n "$token" ] || token=$(jq -r '.token // empty' "$ARETE_CONFIG" 2>/dev/null)
+  fi
+  if [ -z "$endpoint" ] && [ -z "$token" ]; then
+    return
+  fi
+  if [ -z "$endpoint" ] || [ -z "$token" ]; then
+    log_event "arete_misconfigured"
+    return
+  fi
+  case "$endpoint" in
+    http://*|https://*) ;;
+    *) log_event "arete_invalid_endpoint"; return ;;
+  esac
+  if ! command -v curl >/dev/null 2>&1; then
+    log_event "arete_missing_curl"
+    return
+  fi
+  if curl --fail --silent --show-error \
+    --connect-timeout 1 --max-time 2 \
+    --request POST \
+    --header "Authorization: Bearer $token" \
+    --header "Content-Type: application/json" \
+    --data-binary "$PAYLOAD" \
+    "$endpoint" >/dev/null 2>&1; then
+    log_event "arete_delivered"
+  else
+    log_event "arete_delivery_failed"
+  fi
+}
+forward_to_arete &
 
 # Permission request: bell + desktop notification
 if [ "$HOOK_EVENT" = "PermissionRequest" ]; then
