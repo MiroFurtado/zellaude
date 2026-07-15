@@ -459,24 +459,28 @@ impl State {
             return;
         };
 
-        let base = pane_names::editable_base_name(
-            self.pane_base_names.get(&pane.id).map(String::as_str),
-            &pane.title,
-        );
-
-        self.pending_manual_renames.insert(pane.id);
+        let prior_base = self
+            .pane_base_names
+            .get(&pane.id)
+            .cloned()
+            .unwrap_or_default();
+        self.pending_manual_renames.insert(pane.id, prior_base);
         self.applied_pane_names.remove(&pane.id);
-        self.pane_titles.insert(pane.id, base.clone());
-        rename_terminal_pane(pane.id, base);
+        self.pane_titles.insert(pane.id, String::new());
+        rename_terminal_pane(pane.id, String::new());
     }
 
     fn accept_pending_manual_renames(&mut self) {
-        let pane_ids: Vec<u32> = self.pending_manual_renames.drain().collect();
-        for pane_id in pane_ids {
+        let pending: Vec<(u32, String)> = self.pending_manual_renames.drain().collect();
+        for (pane_id, prior_base) in pending {
             if let Some(title) = self.pane_titles.get(&pane_id).cloned() {
                 let base = pane_names::strip_status_prefix(&title);
                 if base.trim().is_empty() {
-                    self.pane_base_names.remove(&pane_id);
+                    if prior_base.trim().is_empty() {
+                        self.pane_base_names.remove(&pane_id);
+                    } else {
+                        self.pane_base_names.insert(pane_id, prior_base);
+                    }
                 } else {
                     self.pane_base_names.insert(pane_id, base);
                 }
@@ -726,18 +730,18 @@ impl State {
         let Some(session) = self.sessions.get(&pane_id) else {
             return;
         };
+        let Some(existing_base) = self
+            .pane_base_names
+            .get(&pane_id)
+            .filter(|base| !base.trim().is_empty())
+        else {
+            return;
+        };
         let elapsed = format_pane_elapsed(
             unix_now().saturating_sub(session.last_event_ts),
             self.settings.elapsed_time,
         );
-        let base = pane_names::strip_elapsed_suffix(
-            self
-                .pane_base_names
-                .get(&pane_id)
-                .map(String::as_str)
-                .unwrap_or("")
-                .trim(),
-        );
+        let base = pane_names::strip_elapsed_suffix(existing_base.trim());
         if self.pane_base_names.get(&pane_id) != Some(&base) {
             self.pane_base_names.insert(pane_id, base.clone());
         }

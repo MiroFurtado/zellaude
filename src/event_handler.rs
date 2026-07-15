@@ -2,8 +2,10 @@ use crate::state::{Activity, FlashMode, HookPayload, SessionInfo, State};
 
 pub fn handle_hook_event(state: &mut State, payload: HookPayload) {
     // Capture env info for use in notifications
-    if let Some(ref name) = payload.zellij_session {
-        state.zellij_session_name = Some(name.clone());
+    if state.zellij_session_name.is_none() {
+        if let Some(ref name) = payload.zellij_session {
+            state.zellij_session_name = Some(name.clone());
+        }
     }
     if let Some(ref tp) = payload.term_program {
         state.term_program = Some(tp.clone());
@@ -117,4 +119,34 @@ pub fn handle_hook_event(state: &mut State, payload: HookPayload) {
     }
     state.sync_pane_name_for_session(payload.pane_id);
     state.state_dirty = true;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn session_end_payload(session_name: &str) -> HookPayload {
+        HookPayload {
+            session_id: None,
+            pane_id: 1,
+            hook_event: "SessionEnd".to_owned(),
+            tool_name: None,
+            cwd: None,
+            zellij_session: Some(session_name.to_owned()),
+            term_program: None,
+            ts_ms: None,
+            agent: None,
+        }
+    }
+
+    #[test]
+    fn hook_session_name_is_only_an_initial_fallback() {
+        let mut state = State::default();
+        handle_hook_event(&mut state, session_end_payload("original"));
+        assert_eq!(state.zellij_session_name.as_deref(), Some("original"));
+
+        state.zellij_session_name = Some("renamed".to_owned());
+        handle_hook_event(&mut state, session_end_payload("original"));
+        assert_eq!(state.zellij_session_name.as_deref(), Some("renamed"));
+    }
 }

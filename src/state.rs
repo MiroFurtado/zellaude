@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 use std::time::{SystemTime, UNIX_EPOCH};
 use zellij_tile::prelude::*;
 
@@ -192,6 +192,7 @@ pub struct State {
     pub applied_pane_names: HashMap<u32, String>,
     /// pane_id -> user-controlled pane name with zellaude's status prefix stripped.
     pub pane_base_names: HashMap<u32, String>,
-    /// Panes whose names are currently being edited manually.
-    pub pending_manual_renames: HashSet<u32>,
+    /// Panes being renamed manually, mapped to their prior base name so
+    /// cancellation or event-order races do not erase it.
+    pub pending_manual_renames: HashMap<u32, String>,
 }

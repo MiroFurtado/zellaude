@@ -56,7 +56,10 @@ fi
 # ── Build ──────────────────────────────────────────────────
 
 echo "Building zellaude..."
-cargo build --release --manifest-path "$PROJECT_DIR/Cargo.toml" 2>&1 | tail -1
+(
+    cd "$PROJECT_DIR"
+    cargo build --release
+)
 
 # ── Install plugin ─────────────────────────────────────────
 

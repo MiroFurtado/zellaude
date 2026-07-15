@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # zellaude-transfer-tab.sh — Open a new tab in the current zellij session that
-# resumes a claude/cursor-agent/codex session from another zellij session's snapshot.
+# resumes a Claude/Cursor/Codex/Copilot session from another Zellij session's
+# snapshot.
 #
 # Reads zellaude's persisted state and uses `zellij action new-tab --layout`
 # to spawn a tab with the right resume command in the right cwd.
@@ -8,9 +9,10 @@
 # Usage:
 #   zellaude-transfer-tab.sh                                  # list sessions
 #   zellaude-transfer-tab.sh <source-session>                 # list tabs
-#   zellaude-transfer-tab.sh <source-session> <tab-name>      # transfer it
+#   zellaude-transfer-tab.sh <source-session> <selector>      # transfer it
 #
-# tab-name accepts a substring/regex match; the first matching tab wins.
+# selector accepts an exact session ID, exact tab name, or tab-name regex.
+# Selecting a tab transfers all captured agent panes in that tab.
 
 set -euo pipefail
 
@@ -31,7 +33,7 @@ if [ $# -lt 1 ]; then
     echo "  $name  ($count tab(s))"
   done
   echo ""
-  echo "Usage: $0 <source-session> [<tab-name>]"
+  echo "Usage: $0 <source-session> [<tab-name-or-session-id>]"
   exit 0
 fi
 
@@ -65,88 +67,121 @@ if [ -z "$TAB_NAME" ]; then
   exit 0
 fi
 
-# Find the entry. Prefer exact tab_name match; fall back to regex/substring.
-ENTRY=$(jq -c --arg name "$TAB_NAME" '
-  [.[] | select(.tab_name == $name)] as $exact
-  | if ($exact | length) > 0 then $exact[0]
+# Find matching entries. Prefer an exact session ID. Exact tab names select all
+# panes at that tab index; regexes must resolve to one tab.
+MATCHES=$(jq -c --arg selector "$TAB_NAME" '
+  [.[] | select(.session_id == $selector)] as $sid
+  | [.[] | select(.tab_name == $selector)] as $exact
+  | if ($sid | length) > 0 then $sid
+    elif ($exact | length) > 0 then $exact
     else
-      [.[] | select((.tab_name // "") | test($name))] as $fuzzy
-      | if ($fuzzy | length) > 0 then $fuzzy[0] else empty end
+      [.[] | select((.tab_name // "") | try test($selector) catch false)]
     end
 ' "$STATE_FILE")
 
-if [ -z "$ENTRY" ]; then
+MATCH_COUNT=$(echo "$MATCHES" | jq 'length')
+if [ "$MATCH_COUNT" -eq 0 ]; then
   echo "No tab matching '$TAB_NAME' in $SESSION" >&2
   exit 1
 fi
 
-CWD=$(echo "$ENTRY"  | jq -r '.cwd // empty')
-SID=$(echo "$ENTRY"  | jq -r '.session_id // empty')
-AGENT=$(echo "$ENTRY" | jq -r '.agent // "claude"')
-NAME=$(echo "$ENTRY" | jq -r '.tab_name // ""')
-
-if [ -z "$SID" ]; then
-  echo "Tab '$NAME' has no session_id — nothing to resume" >&2
+TAB_COUNT=$(echo "$MATCHES" | jq '[.[] | [.tab_index, .tab_name]] | unique | length')
+if [ "$TAB_COUNT" -gt 1 ]; then
+  echo "Ambiguous tab selector '$TAB_NAME' in $SESSION; use an exact tab name or session ID:" >&2
+  echo "$MATCHES" | jq -r '
+    .[]
+    | "  \(.tab_name // "?")  -- agent: \(.agent // "claude"), cwd: \(.cwd // "?"), sid: \(.session_id // "?")"
+  ' >&2
   exit 1
 fi
-
-# Claude binds session_id to the dir it was originally invoked in. If the
-# captured cwd is a subdir of the original, --resume will say "no conversation
-# found". Recover the true project dir from ~/.claude/projects/<encoded>/.
-if [ "$AGENT" = "claude" ]; then
-  TRANSCRIPT=$(find "$HOME/.claude/projects" -name "$SID.jsonl" 2>/dev/null | head -1)
-  if [ -n "$TRANSCRIPT" ]; then
-    ENCODED=$(basename "$(dirname "$TRANSCRIPT")")
-    # Decode: claude encodes / and . both as -, but writes /. as -- (so the
-    # decoder must do -- → /. before remaining - → /).
-    DECODED=$(echo "$ENCODED" | sed -e 's|--|/.|g' -e 's|-|/|g')
-    if [ -d "$DECODED" ]; then
-      CWD="$DECODED"
-    fi
-  fi
-fi
-
-if [ -z "$CWD" ]; then
-  echo "Tab '$NAME' has no cwd captured — refusing to spawn" >&2
-  exit 1
-fi
-
-BIN="claude"
-[ "$AGENT" = "cursor" ] && BIN="cursor-agent"
-[ "$AGENT" = "codex" ] && BIN="codex"
 
 # Escape " and \ for kdl string literals.
 kdl_escape() { printf '%s' "$1" | sed -e 's|\\|\\\\|g' -e 's|"|\\"|g'; }
+
+NAME=$(echo "$MATCHES" | jq -r '.[0].tab_name // ""')
 NAME_E=$(kdl_escape "$NAME")
-CWD_E=$(kdl_escape "$CWD")
-SID_E=$(kdl_escape "$SID")
 
 LAYOUT=$(mktemp /tmp/zellaude-transfer-XXXXXX.kdl)
 trap 'rm -f "$LAYOUT"' EXIT
 
-# Wrap in `bash -ic` so the user's shell aliases (e.g. claude →
-# `claude --dangerously-skip-permissions`) are honored. `exec bash` keeps the
-# pane alive after the agent exits so you can restart it without rebuilding
-# the tab.
-if [ "$AGENT" = "codex" ]; then
-  INNER="$BIN resume $SID_E; exec bash"
-else
-  INNER="$BIN --resume $SID_E; exec bash"
-fi
-INNER_E=$(kdl_escape "$INNER")
-
-cat > "$LAYOUT" <<EOF
+{
+  cat <<EOF
 layout {
     tab name="$NAME_E" {
-        pane command="bash" cwd="$CWD_E" {
-            args "-ic" "$INNER_E"
+        pane size=1 borderless=true {
+            plugin location="file:~/.config/zellij/plugins/zellaude.wasm"
         }
+EOF
+
+  if [ "$MATCH_COUNT" -gt 1 ]; then
+    echo "        pane stacked=true {"
+  fi
+
+  while IFS= read -r ENTRY; do
+    CWD=$(echo "$ENTRY"  | jq -r '.cwd // empty')
+    SID=$(echo "$ENTRY"  | jq -r '.session_id // empty')
+    AGENT=$(echo "$ENTRY" | jq -r '.agent // "claude"')
+
+    if [ -z "$SID" ]; then
+      echo "Tab '$NAME' has a pane with no session_id — refusing to transfer" >&2
+      exit 1
+    fi
+
+    # Claude binds session_id to the directory it was originally invoked in.
+    if [ "$AGENT" = "claude" ]; then
+      TRANSCRIPT=$(find "$HOME/.claude/projects" -name "$SID.jsonl" 2>/dev/null | head -1)
+      if [ -n "$TRANSCRIPT" ]; then
+        ENCODED=$(basename "$(dirname "$TRANSCRIPT")")
+        DECODED=$(echo "$ENCODED" | sed -e 's|--|/.|g' -e 's|-|/|g')
+        if [ -d "$DECODED" ]; then
+          CWD="$DECODED"
+        fi
+      fi
+    fi
+
+    if [ -z "$CWD" ]; then
+      echo "Tab '$NAME' has a pane with no cwd captured — refusing to transfer" >&2
+      exit 1
+    fi
+
+    case "$AGENT" in
+      claude) BIN="claude" ;;
+      cursor) BIN="cursor-agent" ;;
+      codex) BIN="codex" ;;
+      copilot) BIN="copilot" ;;
+      *)
+        echo "Tab '$NAME' uses unsupported agent '$AGENT'" >&2
+        exit 1
+        ;;
+    esac
+
+    CWD_E=$(kdl_escape "$CWD")
+    SID_E=$(kdl_escape "$SID")
+    if [ "$AGENT" = "codex" ]; then
+      INNER="$BIN resume $SID_E; exec bash"
+    else
+      INNER="$BIN --resume $SID_E; exec bash"
+    fi
+    INNER_E=$(kdl_escape "$INNER")
+
+    cat <<EOF
+            pane command="bash" cwd="$CWD_E" {
+                args "-ic" "$INNER_E"
+            }
+EOF
+  done < <(echo "$MATCHES" | jq -c '.[]')
+
+  if [ "$MATCH_COUNT" -gt 1 ]; then
+    echo "        }"
+  fi
+
+  cat <<EOF
     }
 }
 EOF
+} > "$LAYOUT"
 
 zellij action new-tab --layout "$LAYOUT"
 echo "Transferred '$NAME' from $SESSION → current session"
-echo "  agent: $AGENT"
-echo "  cwd:   $CWD"
-echo "  sid:   $SID"
+echo "  panes: $MATCH_COUNT"
+echo "$MATCHES" | jq -r '.[] | "  \(.agent // "claude"): \(.session_id // "?") (\(.cwd // "?"))"'

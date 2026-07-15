@@ -75,13 +75,6 @@ pub fn reconcile_base_name(
     }
 }
 
-pub fn editable_base_name(existing_base: Option<&str>, current_title: &str) -> String {
-    existing_base
-        .filter(|name| !name.trim().is_empty())
-        .map(|name| strip_transient_prefix(&strip_elapsed_suffix(name)).trim().to_string())
-        .unwrap_or_else(|| strip_status_prefix(current_title).trim().to_string())
-}
-
 pub fn strip_status_prefix(name: &str) -> String {
     let trimmed = name.trim();
     let Some(icon) = trimmed.chars().next() else {
@@ -197,14 +190,6 @@ mod tests {
         assert_eq!(strip_status_prefix("⠙ dotfiles"), "dotfiles");
         assert_eq!(strip_status_prefix("◆ ⠸ dotfiles"), "dotfiles");
         assert_eq!(compose(PaneActivity::Thinking, "⠙ dotfiles", Some("6m")), "● dotfiles (6m)");
-    }
-
-    #[test]
-    fn editable_name_removes_status_and_elapsed_before_manual_rename() {
-        assert_eq!(editable_base_name(Some("dotfiles"), "● dotfiles (4m)"), "dotfiles");
-        assert_eq!(editable_base_name(None, "● dotfiles (4m)"), "dotfiles");
-        assert_eq!(editable_base_name(None, "● ⠙ dotfiles (4m)"), "dotfiles");
-        assert_eq!(editable_base_name(Some("dotfiles (4m)"), "● dotfiles (4m)"), "dotfiles");
     }
 
     #[test]
