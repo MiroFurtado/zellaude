@@ -755,7 +755,14 @@ impl State {
     }
 
     pub(crate) fn clear_agent_pane_name(&mut self, pane_id: u32) {
-        let base = self.pane_base_names.remove(&pane_id).unwrap_or_default();
+        // SessionEnd can be followed by SessionStart in the same terminal pane
+        // during a resume. Keep the user-controlled base name until the pane
+        // itself disappears so startup process-title churn cannot replace it.
+        let base = self
+            .pane_base_names
+            .get(&pane_id)
+            .cloned()
+            .unwrap_or_default();
         if self.applied_pane_names.remove(&pane_id).is_some() {
             rename_terminal_pane(pane_id, base);
         }

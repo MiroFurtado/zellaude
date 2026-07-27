@@ -149,4 +149,33 @@ mod tests {
         handle_hook_event(&mut state, session_end_payload("original"));
         assert_eq!(state.zellij_session_name.as_deref(), Some("renamed"));
     }
+
+    #[test]
+    fn session_end_preserves_manual_pane_base_name_for_resume() {
+        let mut state = State::default();
+        state.sessions.insert(
+            1,
+            SessionInfo {
+                session_id: "session".to_owned(),
+                pane_id: 1,
+                activity: Activity::Prompting,
+                tab_name: None,
+                tab_index: None,
+                last_event_ts: 0,
+                cwd: None,
+                last_ts_ms: 0,
+                agent: Some("copilot".to_owned()),
+            },
+        );
+        state
+            .pane_base_names
+            .insert(1, "slm-training".to_owned());
+
+        handle_hook_event(&mut state, session_end_payload("main"));
+
+        assert_eq!(
+            state.pane_base_names.get(&1).map(String::as_str),
+            Some("slm-training")
+        );
+    }
 }
